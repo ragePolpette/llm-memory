@@ -1,69 +1,67 @@
-"""Test storage layer."""
+"""Unit test: storage + dedup + scope isolation."""
+
+from __future__ import annotations
 
 import pytest
-from src.config import MemoryScope
-from src.models import Memory
-from src.storage.markdown_store import MarkdownStore
+
+from src.service.memory_service import ActorContext
 
 
 @pytest.mark.asyncio
-async def test_write_and_read_memory(test_config):
-    """Test scrittura e lettura memoria."""
-    store = MarkdownStore(test_config.storage_dir)
-    
-    memory = Memory(
-        content="Test content for memory system",
-        context="testing",
-        agent_id="test-agent",
-        scope=MemoryScope.SHARED,
-        tags=["test", "demo"],
+async def test_dedup_hash(service):
+    actor = ActorContext(agent_id="agent-a", user_id="user-a", workspace_id="ws-test", project_id="prj-test")
+
+    first = await service.add(
+        {
+            "content": "Il progetto usa SQLite locale per metadata.",
+            "context": "arch",
+            "agent_id": actor.agent_id,
+            "visibility": "shared",
+            "tier": "tier-2",
+            "type": "fact",
+        },
+        actor,
     )
-    
-    # Scrivi
-    path = await store.write(memory)
-    assert path.exists()
-    
-    # Leggi
-    read_memory = await store.read(str(memory.id))
-    assert read_memory is not None
-    assert read_memory.content == memory.content
-    assert read_memory.agent_id == memory.agent_id
 
-
-@pytest.mark.asyncio
-async def test_list_memories(test_config):
-    """Test listing memorie."""
-    store = MarkdownStore(test_config.storage_dir)
-    
-    # Crea alcune memorie
-    for i in range(3):
-        memory = Memory(
-            content=f"Memory {i}",
-            context="test",
-            agent_id="test-agent",
-            scope=MemoryScope.SHARED,
-        )
-        await store.write(memory)
-    
-    # Lista
-    paths = await store.list_memories(scope=MemoryScope.SHARED, limit=10)
-    assert len(paths) >= 3
-
-
-@pytest.mark.asyncio
-async def test_duplicate_detection(test_config):
-    """Test rilevamento duplicati."""
-    store = MarkdownStore(test_config.storage_dir)
-    
-    memory = Memory(
-        content="Duplicate test content",
-        context="test",
-        agent_id="test-agent",
-        scope=MemoryScope.SHARED,
+    second = await service.add(
+        {
+            "content": "Il progetto usa SQLite locale per metadata.",
+            "context": "arch",
+            "agent_id": actor.agent_id,
+            "visibility": "shared",
+            "tier": "tier-2",
+            "type": "fact",
+        },
+        actor,
     )
-    
-    await store.write(memory)
-    
-    # Cerca per hash
-    found_id = await store.find_by_hash(memory.content_hash)
-    assert found_id == str(memory.id)
+
+    assert first["success"] is True
+    assert second["duplicate_of"] == first["entry_id"]
+
+
+@pytest.mark.asyncio
+async def test_scope_isolation(service):
+    actor_a = ActorContext(agent_id="agent-a", user_id="user-a", workspace_id="ws-test", project_id="project-a")
+    actor_b = ActorContext(agent_id="agent-b", user_id="user-b", workspace_id="ws-test", project_id="project-b")
+
+    await service.add(
+        {
+            "content": "Dato privato progetto A",
+            "agent_id": actor_a.agent_id,
+            "scope": {
+                "workspace_id": "ws-test",
+                "project_id": "project-a",
+                "agent_id": "agent-a",
+            },
+            "visibility": "private",
+            "tier": "tier-2",
+            "type": "fact",
+        },
+        actor_a,
+    )
+
+    results_a = await service.search("Dato privato", actor_a, limit=5)
+    results_b = await service.search("Dato privato", actor_b, limit=5)
+
+    assert len(results_a) >= 1
+    assert len(results_b) == 0

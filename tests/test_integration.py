@@ -1,80 +1,106 @@
-"""Test integration end-to-end."""
+"""Integration tests end-to-end v2."""
+
+from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
-from src.config import MemoryScope
-from src.coordination.conflict_resolver import ConflictResolver
-from src.coordination.scope_manager import ScopeManager
-from src.embedding.embedding_service import get_embedding_provider
-from src.indexing.indexer import MemoryIndexer
-from src.models import Memory
-from src.storage.markdown_store import MarkdownStore
-from src.vectordb.lance_store import LanceVectorStore
+
+from src.service.memory_service import ActorContext
 
 
 @pytest.mark.asyncio
-async def test_full_write_search_flow(test_config):
-    """Test completo: write -> index -> search."""
-    
-    # Setup componenti
-    embedding_provider = get_embedding_provider()
-    markdown_store = MarkdownStore(test_config.storage_dir)
-    vector_store = LanceVectorStore(test_config.lancedb_dir, embedding_provider)
-    indexer = MemoryIndexer(vector_store, mode=test_config.indexing_mode)
-    scope_manager = ScopeManager()
-    conflict_resolver = ConflictResolver(markdown_store, vector_store)
-    
-    # Crea memoria
-    memory = Memory(
-        content="Python is a programming language used for AI and data science",
-        context="programming_knowledge",
-        agent_id="agent-alpha",
-        scope=MemoryScope.SHARED,
-        tags=["python", "programming"],
+async def test_invalidation_precedence(service):
+    actor = ActorContext(agent_id="agent-inv", user_id="user-inv", workspace_id="ws-test", project_id="prj-test")
+
+    add_result = await service.add(
+        {
+            "content": "Assunzione iniziale: il servizio usa provider esterno.",
+            "context": "assumption",
+            "agent_id": actor.agent_id,
+            "tier": "tier-2",
+            "type": "assumption",
+            "visibility": "shared",
+        },
+        actor,
     )
-    
-    # Scrivi
-    await markdown_store.write(memory)
-    
-    # Indicizza
-    result = await indexer.index(memory)
-    assert result.indexed is True
-    
-    # Cerca
-    search_results = await vector_store.search(
-        query="What is Python used for?",
-        limit=5
-    )
-    
-    assert len(search_results) > 0
-    assert search_results[0].memory_id == memory.id
+    entry_id = add_result["entry_id"]
+
+    before = await service.search("provider esterno", actor, limit=5)
+    assert any(bundle.entry_id == entry_id for bundle in before)
+
+    inv = service.invalidate(target_ids=[entry_id], actor=actor, reason="Smentita: sistema locale-only")
+    assert inv["count"] == 1
+
+    after = await service.search("provider esterno", actor, limit=5, include_invalidated=False)
+    assert all(bundle.entry_id != entry_id for bundle in after)
 
 
 @pytest.mark.asyncio
-async def test_scope_permissions(test_config):
-    """Test permessi scope."""
-    scope_manager = ScopeManager()
-    
-    # Private memory
-    private_memory = Memory(
-        content="Private data",
-        context="test",
-        agent_id="agent-alpha",
-        scope=MemoryScope.PRIVATE,
+async def test_import_export_memory_md_deterministic(service, tmp_path: Path):
+    actor = ActorContext(agent_id="agent-io", user_id="user-io", workspace_id="ws-test", project_id="prj-test")
+
+    await service.add(
+        {
+            "content": "Fatto stabile: la memoria e locale.",
+            "context": "stable",
+            "agent_id": actor.agent_id,
+            "tier": "tier-3",
+            "type": "fact",
+            "visibility": "shared",
+        },
+        actor,
     )
-    
-    # Agent proprietario può leggere
-    assert scope_manager.can_read("agent-alpha", private_memory) is True
-    
-    # Altro agente non può leggere
-    assert scope_manager.can_read("agent-beta", private_memory) is False
-    
-    # Shared memory
-    shared_memory = Memory(
-        content="Shared data",
-        context="test",
-        agent_id="agent-alpha",
-        scope=MemoryScope.SHARED,
+
+    md_path = tmp_path / "memory.md"
+    export_result = service.export_data(md_path, "memory.md", actor)
+    assert export_result.count >= 1
+
+    exported_once = md_path.read_text(encoding="utf-8")
+    export_result_2 = service.export_data(md_path, "memory.md", actor)
+    assert export_result_2.count == export_result.count
+    exported_twice = md_path.read_text(encoding="utf-8")
+
+    assert exported_once == exported_twice
+
+
+@pytest.mark.asyncio
+async def test_reembed_query_consistency(service):
+    actor = ActorContext(agent_id="agent-search", user_id="user-search", workspace_id="ws-test", project_id="prj-test")
+
+    await service.add(
+        {
+            "content": "SQLite e il backend metadata predefinito.",
+            "context": "architecture",
+            "agent_id": actor.agent_id,
+            "tier": "tier-2",
+            "type": "fact",
+            "visibility": "shared",
+        },
+        actor,
     )
-    
-    # Tutti possono leggere
-    assert scope_manager.can_read("agent-beta", shared_memory) is True
+
+    before = await service.search("backend metadata", actor, limit=3)
+    assert len(before) >= 1
+
+    await service.reembed(actor=actor, model_id="local-hash-v3", activate=True)
+    after = await service.search("backend metadata", actor, limit=3)
+    assert len(after) >= 1
+    assert before[0].entry_id == after[0].entry_id
+
+
+@pytest.mark.asyncio
+async def test_import_jsonl(service, tmp_path: Path):
+    actor = ActorContext(agent_id="agent-jsonl", user_id="user-jsonl", workspace_id="ws-test", project_id="prj-test")
+
+    jsonl_path = tmp_path / "memory.jsonl"
+    jsonl_path.write_text(
+        '{"id":"e-1","tier":"tier-2","scope":{"workspace_id":"ws-test","project_id":"prj-test","user_id":"user-jsonl","agent_id":"agent-jsonl"},"visibility":"shared","source":"test","type":"fact","status":"active","content":"JSONL import test","context":"import","tags":[],"sensitivity_tags":[],"metadata":{},"links":[],"confidence":0.7,"created_at":"2026-01-01T00:00:00+00:00","updated_at":"2026-01-01T00:00:00+00:00","content_hash":"abc","embedding_version_id":null,"encrypted":false,"redacted":false}\n',
+        encoding="utf-8",
+    )
+
+    result = await service.import_data(jsonl_path, "jsonl", actor)
+    assert result.imported == 1
+
+    entries = service.list_entries(actor, limit=10)
+    assert any(entry.id == "e-1" for entry in entries)
