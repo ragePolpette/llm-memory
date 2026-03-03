@@ -1,315 +1,394 @@
-"""Definizione tools MCP per LLM Memory."""
+"""Definizione tools MCP v2 + wrapper legacy v1."""
 
 from __future__ import annotations
 
-import logging
-from typing import Literal, Optional
-from uuid import UUID
+from pathlib import Path
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
-from ..config import MemoryScope
-from ..coordination.conflict_resolver import ConflictResolver
-from ..coordination.scope_manager import ScopeManager
-from ..indexing.indexer import MemoryIndexer
-from ..models import Memory, MemorySummary, MemoryWriteResult
-from ..storage.markdown_store import MarkdownStore
-from ..vectordb.lance_store import LanceVectorStore
-
-logger = logging.getLogger(__name__)
+from ..config import Tier
+from ..service.memory_service import ActorContext, MemoryService
 
 
-def register_tools(
-    server: Server,
-    markdown_store: MarkdownStore,
-    vector_store: LanceVectorStore,
-    indexer: MemoryIndexer,
-    scope_manager: ScopeManager,
-    conflict_resolver: ConflictResolver,
-):
-    """Registra tutti i tools MCP sul server."""
-    
+def _json_text(payload: dict | list) -> list[TextContent]:
+    import json
+
+    return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=True, indent=2, default=str))]
+
+
+def _actor_from_args(args: dict, service: MemoryService) -> ActorContext:
+    raw_scope = args.get("scope")
+    scope = raw_scope if isinstance(raw_scope, dict) else {}
+    agent_id = args.get("agent_id") or scope.get("agent_id") or "unknown-agent"
+    user_id = args.get("user_id") or scope.get("user_id")
+    workspace_id = scope.get("workspace_id", service.config.default_workspace_id)
+    project_id = scope.get("project_id", service.config.default_project_id)
+    return ActorContext(
+        agent_id=agent_id,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        project_id=project_id,
+    )
+
+
+def register_tools(server: Server, memory_service: MemoryService):
+    """Registra tool MCP v2 e compatibilità v1."""
+
     @server.list_tools()
     async def list_tools() -> list[Tool]:
-        """Lista i tools disponibili."""
         return [
             Tool(
-                name="memory_write",
-                description="Salva una memoria nel sistema condiviso",
+                name="memory.add",
+                description="Aggiunge una entry memoria tiered (v2)",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "content": {"type": "string", "description": "Contenuto della memoria"},
-                        "context": {"type": "string", "description": "Contesto semantico"},
-                        "agent_id": {"type": "string", "description": "ID dell'agente"},
-                        "scope": {
+                        "content": {"type": "string"},
+                        "context": {"type": "string"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "tier": {"type": "string", "enum": ["tier-1", "tier-2", "tier-3"], "default": "tier-1"},
+                        "type": {
+                            "type": "string",
+                            "enum": ["fact", "assumption", "unknown", "decision", "invalidated"],
+                            "default": "fact",
+                        },
+                        "visibility": {
                             "type": "string",
                             "enum": ["private", "shared", "global"],
                             "default": "shared",
-                            "description": "Scope di visibilità"
                         },
-                        "tags": {
+                        "scope": {
+                            "type": "object",
+                            "properties": {
+                                "workspace_id": {"type": "string"},
+                                "project_id": {"type": "string"},
+                                "user_id": {"type": "string"},
+                                "agent_id": {"type": "string"},
+                            },
+                        },
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "sensitivity_tags": {"type": "array", "items": {"type": "string"}},
+                        "links": {
                             "type": "array",
-                            "items": {"type": "string"},
-                            "default": [],
-                            "description": "Tag per categorizzazione"
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "target_id": {"type": "string"},
+                                    "relation": {"type": "string"},
+                                },
+                                "required": ["target_id", "relation"],
+                            },
                         },
-                        "session_id": {"type": "string", "description": "ID sessione (opzionale)"},
+                        "metadata": {"type": "object"},
+                        "source": {"type": "string", "default": "mcp"},
+                        "confidence": {"type": "number", "default": 0.5},
+                    },
+                    "required": ["content", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.search",
+                description="Ricerca semantica cross-modello con ranking governance-aware (v2)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                        "limit": {"type": "integer", "default": 10},
+                        "include_invalidated": {"type": "boolean", "default": False},
+                        "tier": {"type": "string", "enum": ["tier-1", "tier-2", "tier-3"]},
+                    },
+                    "required": ["query", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.get",
+                description="Recupera entry per id (v2)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["entry_id", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.invalidate",
+                description="Invalida entry precedenti con motivo e audit trail (v2)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "target_ids": {"type": "array", "items": {"type": "string"}},
+                        "reason": {"type": "string"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["target_ids", "reason", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.promote",
+                description="Promuove memorie verso tier superiore con consolidamento opzionale (v2)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "entry_ids": {"type": "array", "items": {"type": "string"}},
+                        "target_tier": {
+                            "type": "string",
+                            "enum": ["tier-1", "tier-2", "tier-3"],
+                            "default": "tier-3",
+                        },
+                        "reason": {"type": "string"},
+                        "merge": {"type": "boolean", "default": False},
+                        "summary": {"type": "string"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["entry_ids", "reason", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.reembed",
+                description="Reindex/reembed incrementale e ripristinabile (v2)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                        "model_id": {"type": "string"},
+                        "dim": {"type": "integer"},
+                        "activate": {"type": "boolean", "default": True},
+                        "batch_size": {"type": "integer", "default": 64},
+                    },
+                    "required": ["agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.export",
+                description="Export locale memoria in jsonl / memory.md / sqlite (v2)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "format": {"type": "string", "enum": ["jsonl", "memory.md", "sqlite"]},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["path", "format", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.import",
+                description="Import locale memoria da jsonl / memory.md (v2)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "format": {"type": "string", "enum": ["jsonl", "memory.md"]},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["path", "format", "agent_id"],
+                },
+            ),
+            # ---- wrapper legacy v1 ----
+            Tool(
+                name="memory_write",
+                description="Compat legacy v1 -> memory.add",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string"},
+                        "context": {"type": "string"},
+                        "agent_id": {"type": "string"},
+                        "scope": {"type": "string", "enum": ["private", "shared", "global"], "default": "shared"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "session_id": {"type": "string"},
                     },
                     "required": ["content", "context", "agent_id"],
                 },
             ),
             Tool(
                 name="memory_search",
-                description="Ricerca semantica nelle memorie",
+                description="Compat legacy v1 -> memory.search",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Query di ricerca"},
-                        "agent_id": {"type": "string", "description": "ID dell'agente richiedente"},
-                        "scope": {
-                            "type": "string",
-                            "enum": ["all", "private", "shared", "global"],
-                            "default": "all",
-                            "description": "Scope da cercare"
-                        },
-                        "limit": {"type": "integer", "default": 10, "description": "Numero massimo risultati"},
+                        "query": {"type": "string"},
+                        "agent_id": {"type": "string"},
+                        "limit": {"type": "integer", "default": 10},
                     },
                     "required": ["query", "agent_id"],
                 },
             ),
             Tool(
                 name="memory_read",
-                description="Legge una memoria specifica per ID",
+                description="Compat legacy v1 -> memory.get",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "memory_id": {"type": "string", "description": "UUID della memoria"},
-                        "agent_id": {"type": "string", "description": "ID dell'agente richiedente"},
+                        "memory_id": {"type": "string"},
+                        "agent_id": {"type": "string"},
                     },
                     "required": ["memory_id", "agent_id"],
                 },
             ),
             Tool(
                 name="memory_list",
-                description="Lista memorie per scope/agente",
+                description="Compat legacy v1 listing",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "agent_id": {"type": "string", "description": "ID dell'agente richiedente"},
-                        "scope": {
-                            "type": "string",
-                            "enum": ["private", "shared", "global"],
-                            "default": "shared",
-                            "description": "Scope da listare"
-                        },
-                        "limit": {"type": "integer", "default": 50, "description": "Numero massimo risultati"},
+                        "agent_id": {"type": "string"},
+                        "limit": {"type": "integer", "default": 50},
+                        "tier": {"type": "string", "enum": ["tier-1", "tier-2", "tier-3"]},
                     },
                     "required": ["agent_id"],
                 },
             ),
         ]
-    
+
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        """Esegue un tool."""
-        
+        actor = _actor_from_args(arguments, memory_service)
+
+        if name == "memory.add":
+            payload = await memory_service.add(arguments, actor)
+            payload["api_version"] = "v2"
+            return _json_text(payload)
+
+        if name == "memory.search":
+            bundles = await memory_service.search(
+                query=arguments["query"],
+                actor=actor,
+                limit=int(arguments.get("limit", 10)),
+                include_invalidated=bool(arguments.get("include_invalidated", False)),
+                tier=arguments.get("tier"),
+            )
+            return _json_text({"api_version": "v2", "count": len(bundles), "bundles": [b.model_dump(mode="json") for b in bundles]})
+
+        if name == "memory.get":
+            entry = memory_service.get(arguments["entry_id"], actor)
+            return _json_text({"api_version": "v2", "entry": entry.model_dump(mode="json") if entry else None})
+
+        if name == "memory.invalidate":
+            payload = memory_service.invalidate(
+                target_ids=list(arguments.get("target_ids", [])),
+                actor=actor,
+                reason=arguments["reason"],
+            )
+            payload["api_version"] = "v2"
+            return _json_text(payload)
+
+        if name == "memory.promote":
+            payload = memory_service.promote(
+                entry_ids=list(arguments.get("entry_ids", [])),
+                actor=actor,
+                target_tier=Tier(arguments.get("target_tier", "tier-3")),
+                reason=arguments.get("reason", "promotion"),
+                merge=bool(arguments.get("merge", False)),
+                summary=arguments.get("summary"),
+            )
+            payload["api_version"] = "v2"
+            return _json_text(payload)
+
+        if name == "memory.reembed":
+            result = await memory_service.reembed(
+                actor=actor,
+                model_id=arguments.get("model_id"),
+                dim=arguments.get("dim"),
+                activate=bool(arguments.get("activate", True)),
+                batch_size=int(arguments.get("batch_size", 64)),
+            )
+            return _json_text({"api_version": "v2", **result.model_dump(mode="json")})
+
+        if name == "memory.export":
+            result = memory_service.export_data(
+                path=Path(arguments["path"]).expanduser(),
+                fmt=arguments["format"],
+                actor=actor,
+            )
+            return _json_text({"api_version": "v2", **result.model_dump(mode="json")})
+
+        if name == "memory.import":
+            result = await memory_service.import_data(
+                path=Path(arguments["path"]).expanduser(),
+                fmt=arguments["format"],
+                actor=actor,
+            )
+            return _json_text({"api_version": "v2", **result.model_dump(mode="json")})
+
+        # ----- legacy wrappers -----
         if name == "memory_write":
-            return await _memory_write(
-                arguments,
-                markdown_store,
-                indexer,
-                scope_manager,
-                conflict_resolver
+            payload = {
+                "content": arguments["content"],
+                "context": arguments.get("context", ""),
+                "agent_id": arguments["agent_id"],
+                "visibility": arguments.get("scope", "shared"),
+                "tags": arguments.get("tags", []),
+                "type": "fact",
+                "tier": "tier-2",
+                "metadata": {"session_id": arguments.get("session_id")},
+            }
+            result = await memory_service.add(payload, actor)
+            return _json_text({"api_version": "v1", "result": result})
+
+        if name == "memory_search":
+            bundles = await memory_service.search(
+                query=arguments["query"],
+                actor=actor,
+                limit=int(arguments.get("limit", 10)),
             )
-        
-        elif name == "memory_search":
-            return await _memory_search(
-                arguments,
-                vector_store,
-                scope_manager
+            legacy = [
+                {
+                    "memory_id": bundle.entry_id,
+                    "score": bundle.score,
+                    "snippet": bundle.snippet,
+                    "tier": bundle.tier.value,
+                    "status": bundle.status.value,
+                }
+                for bundle in bundles
+            ]
+            return _json_text({"api_version": "v1", "count": len(legacy), "results": legacy})
+
+        if name == "memory_read":
+            entry = memory_service.get(arguments["memory_id"], actor)
+            return _json_text({"api_version": "v1", "entry": entry.model_dump(mode="json") if entry else None})
+
+        if name == "memory_list":
+            entries = memory_service.list_entries(
+                actor=actor,
+                limit=int(arguments.get("limit", 50)),
+                tier=arguments.get("tier"),
             )
-        
-        elif name == "memory_read":
-            return await _memory_read(
-                arguments,
-                markdown_store,
-                scope_manager
+            return _json_text(
+                {
+                    "api_version": "v1",
+                    "count": len(entries),
+                    "entries": [
+                        {
+                            "memory_id": entry.id,
+                            "context": entry.context,
+                            "scope": entry.visibility.value,
+                            "tier": entry.tier.value,
+                            "created_at": entry.created_at,
+                            "content_preview": entry.content[:200],
+                        }
+                        for entry in entries
+                    ],
+                }
             )
-        
-        elif name == "memory_list":
-            return await _memory_list(
-                arguments,
-                markdown_store,
-                scope_manager
-            )
-        
-        else:
-            raise ValueError(f"Unknown tool: {name}")
 
-
-async def _memory_write(
-    args: dict,
-    markdown_store: MarkdownStore,
-    indexer: MemoryIndexer,
-    scope_manager: ScopeManager,
-    conflict_resolver: ConflictResolver,
-) -> list[TextContent]:
-    """Implementa memory_write."""
-    
-    scope = MemoryScope(args.get("scope", "shared"))
-    agent_id = args["agent_id"]
-    
-    # Verifica permessi
-    if not scope_manager.can_write(agent_id, scope):
-        return [TextContent(
-            type="text",
-            text=f"Error: Agent {agent_id} cannot write to scope {scope.value}"
-        )]
-    
-    # Crea memoria
-    memory = Memory(
-        content=args["content"],
-        context=args["context"],
-        agent_id=agent_id,
-        scope=scope,
-        tags=args.get("tags", []),
-        session_id=args.get("session_id"),
-    )
-    
-    # Check duplicati
-    duplicate_id = await conflict_resolver.check_duplicate(memory)
-    if duplicate_id:
-        result = MemoryWriteResult(
-            success=True,
-            memory_id=UUID(duplicate_id),
-            indexed=True,
-            mode="duplicate",
-            duplicate_of=UUID(duplicate_id),
-            message="Content already exists, returning existing memory ID"
-        )
-        return [TextContent(type="text", text=result.model_dump_json(indent=2))]
-    
-    # Salva su filesystem
-    await markdown_store.write(memory)
-    
-    # Indicizza
-    index_result = await indexer.index(memory)
-    
-    result = MemoryWriteResult(
-        success=True,
-        memory_id=memory.id,
-        indexed=index_result.indexed,
-        mode=index_result.mode,
-        message="Memory saved successfully"
-    )
-    
-    return [TextContent(type="text", text=result.model_dump_json(indent=2))]
-
-
-async def _memory_search(
-    args: dict,
-    vector_store: LanceVectorStore,
-    scope_manager: ScopeManager,
-) -> list[TextContent]:
-    """Implementa memory_search."""
-    
-    query = args["query"]
-    agent_id = args["agent_id"]
-    scope = args.get("scope", "all")
-    limit = args.get("limit", 10)
-    
-    # Costruisci filtro SQL per scope
-    sql_filter = None
-    if scope != "all":
-        sql_filter = f"scope = '{scope}'"
-    
-    # Esegui ricerca
-    results = await vector_store.search(query, limit=limit, filters=sql_filter)
-    
-    # Filtra per permessi
-    accessible_results = []
-    for result in results:
-        memory = Memory(
-            id=result.memory_id,
-            content=result.content,
-            context=result.context,
-            agent_id=result.agent_id,
-            scope=MemoryScope(result.scope),
-            tags=result.tags,
-            created_at=result.created_at,
-        )
-        if scope_manager.can_read(agent_id, memory):
-            accessible_results.append(result)
-    
-    # Formatta risultati
-    results_json = [r.model_dump() for r in accessible_results]
-    
-    return [TextContent(
-        type="text",
-        text=f"Found {len(accessible_results)} results:\n\n" + 
-             "\n\n".join([f"**Score: {r['score']:.3f}**\n{r['content'][:200]}..." for r in results_json])
-    )]
-
-
-async def _memory_read(
-    args: dict,
-    markdown_store: MarkdownStore,
-    scope_manager: ScopeManager,
-) -> list[TextContent]:
-    """Implementa memory_read."""
-    
-    memory_id = args["memory_id"]
-    agent_id = args["agent_id"]
-    
-    # Leggi memoria
-    memory = await markdown_store.read(memory_id)
-    
-    if not memory:
-        return [TextContent(type="text", text=f"Memory {memory_id} not found")]
-    
-    # Verifica permessi
-    if not scope_manager.can_read(agent_id, memory):
-        return [TextContent(type="text", text=f"Access denied to memory {memory_id}")]
-    
-    return [TextContent(type="text", text=memory.model_dump_json(indent=2))]
-
-
-async def _memory_list(
-    args: dict,
-    markdown_store: MarkdownStore,
-    scope_manager: ScopeManager,
-) -> list[TextContent]:
-    """Implementa memory_list."""
-    
-    agent_id = args["agent_id"]
-    scope = MemoryScope(args.get("scope", "shared"))
-    limit = args.get("limit", 50)
-    
-    # Lista file
-    paths = await markdown_store.list_memories(scope=scope, agent_id=agent_id, limit=limit)
-    
-    # Leggi e filtra
-    summaries = []
-    for path in paths:
-        memory = await markdown_store.read_by_path(path)
-        if memory and scope_manager.can_read(agent_id, memory):
-            summary = MemorySummary(
-                memory_id=memory.id,
-                context=memory.context,
-                agent_id=memory.agent_id,
-                scope=memory.scope,
-                tags=memory.tags,
-                created_at=memory.created_at,
-                content_preview=memory.content[:200]
-            )
-            summaries.append(summary)
-    
-    summaries_json = [s.model_dump() for s in summaries]
-    
-    return [TextContent(
-        type="text",
-        text=f"Found {len(summaries)} memories:\n\n" +
-             "\n\n".join([f"**{s['context']}** ({s['created_at']})\n{s['content_preview']}..." for s in summaries_json])
-    )]
+        raise ValueError(f"Unknown tool: {name}")
