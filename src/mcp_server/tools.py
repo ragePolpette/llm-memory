@@ -39,8 +39,16 @@ def register_tools(server: Server, memory_service: MemoryService):
     async def list_tools() -> list[Tool]:
         return [
             Tool(
+                name="memory.about",
+                description="Spiega scopo e confini: memorie operative persistenti (non retrieval di codice repository).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            Tool(
                 name="memory.add",
-                description="Aggiunge una entry memoria tiered (v2)",
+                description="Aggiunge memoria operativa persistente tiered (decisioni, fatti, regole operative).",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -90,7 +98,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.search",
-                description="Ricerca semantica cross-modello con ranking governance-aware (v2)",
+                description="Ricerca semantica su memorie operative persistenti; non destinato a contesto codice repository.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -107,7 +115,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.get",
-                description="Recupera entry per id (v2)",
+                description="Recupera una memoria operativa per id (v2)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -121,7 +129,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.invalidate",
-                description="Invalida entry precedenti con motivo e audit trail (v2)",
+                description="Invalida memorie obsolete/errate con motivo e audit trail (v2)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -136,7 +144,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.promote",
-                description="Promuove memorie verso tier superiore con consolidamento opzionale (v2)",
+                description="Promuove memorie operative verso tier superiore con consolidamento opzionale (v2)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -158,7 +166,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.reembed",
-                description="Reindex/reembed incrementale e ripristinabile (v2)",
+                description="Reindex/reembed incrementale delle memorie operative (v2)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -175,7 +183,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.export",
-                description="Export locale memoria in jsonl / memory.md / sqlite (v2)",
+                description="Export locale memorie operative in jsonl / memory.md / sqlite (v2)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -190,7 +198,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.import",
-                description="Import locale memoria da jsonl / memory.md (v2)",
+                description="Import locale memorie operative da jsonl / memory.md (v2)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -206,7 +214,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             # ---- wrapper legacy v1 ----
             Tool(
                 name="memory_write",
-                description="Compat legacy v1 -> memory.add",
+                description="Compat legacy v1 -> memory.add (memoria operativa)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -222,7 +230,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory_search",
-                description="Compat legacy v1 -> memory.search",
+                description="Compat legacy v1 -> memory.search (memoria operativa)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -235,7 +243,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory_read",
-                description="Compat legacy v1 -> memory.get",
+                description="Compat legacy v1 -> memory.get (memoria operativa)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -247,7 +255,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory_list",
-                description="Compat legacy v1 listing",
+                description="Compat legacy v1 listing (memorie operative)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -263,6 +271,22 @@ def register_tools(server: Server, memory_service: MemoryService):
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         actor = _actor_from_args(arguments, memory_service)
+
+        if name == "memory.about":
+            return _json_text(
+                {
+                    "api_version": "v2",
+                    "server": "llm-memory",
+                    "purpose": "Memoria operativa persistente (decisioni, preferenze, regole, fatti di lavoro).",
+                    "capabilities": [
+                        "add/search/get/invalidate/promote/reembed/export/import"
+                    ],
+                    "boundaries": [
+                        "Non e' un indicizzatore di codice repository",
+                        "Per contesto codice/documenti usare llm-context",
+                    ],
+                }
+            )
 
         if name == "memory.add":
             payload = await memory_service.add(arguments, actor)

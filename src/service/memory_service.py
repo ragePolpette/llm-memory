@@ -306,7 +306,9 @@ class MemoryService:
                 continue
             if tier and entry.tier.value != tier:
                 continue
-            if (not include_invalidated) and entry.status == EntryStatus.INVALIDATED:
+            if (not include_invalidated) and (
+                entry.status == EntryStatus.INVALIDATED or entry.type == EntryType.INVALIDATED
+            ):
                 continue
 
             score = self._rank(entry, similarity)

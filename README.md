@@ -1,6 +1,7 @@
 # llm-memory (Tiered, Local-Only MCP Memory)
 
 Memoria RAG locale per MCP con architettura a tier, governance e audit trail. Nessun servizio cloud richiesto.
+Questo MCP e' dedicato a memorie operative persistenti (non al retrieval di contesto codice repository).
 
 ## Obiettivi implementati
 
@@ -81,6 +82,13 @@ MEMORY_PRIVACY_ENCRYPT_SENSITIVE=false
 # Scope defaults
 MEMORY_WORKSPACE_ID=default
 MEMORY_PROJECT_ID=default
+
+# MCP transport
+MCP_MEMORY_HOST=127.0.0.1
+MCP_MEMORY_PORT=8767
+MCP_MEMORY_SSE_ENABLED=false
+MCP_MEMORY_ALLOWED_HOSTS=localhost:*,127.0.0.1:*,[::1]:*
+MCP_MEMORY_ALLOWED_ORIGINS=http://localhost:*,http://127.0.0.1:*,https://localhost:*,https://127.0.0.1:*
 
 # Governance
 DEDUP_HASH_ENABLED=true

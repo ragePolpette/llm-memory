@@ -61,7 +61,8 @@ models/
 .env
 .env.*
 !.env.example
-config.local.*`n!config.local.example.*
+config.local.*
+!config.local.example.*
 
 # Logs
 *.log

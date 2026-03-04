@@ -193,6 +193,30 @@ class Config(BaseModel):
         default_factory=lambda: _env_bool("MEMORY_ALLOW_OUTBOUND_NETWORK", False)
     )
 
+    # MCP transport (HTTP)
+    mcp_host: str = Field(default_factory=lambda: os.getenv("MCP_MEMORY_HOST", "127.0.0.1"))
+    mcp_port: int = Field(default_factory=lambda: int(os.getenv("MCP_MEMORY_PORT", "8767")))
+    mcp_sse_enabled: bool = Field(
+        default_factory=lambda: _env_bool("MCP_MEMORY_SSE_ENABLED", False)
+    )
+    mcp_allowed_hosts: list[str] = Field(
+        default_factory=lambda: _env_csv(
+            "MCP_MEMORY_ALLOWED_HOSTS",
+            ["localhost:*", "127.0.0.1:*", "[::1]:*"],
+        )
+    )
+    mcp_allowed_origins: list[str] = Field(
+        default_factory=lambda: _env_csv(
+            "MCP_MEMORY_ALLOWED_ORIGINS",
+            [
+                "http://localhost:*",
+                "http://127.0.0.1:*",
+                "https://localhost:*",
+                "https://127.0.0.1:*",
+            ],
+        )
+    )
+
     # Indexing (legacy, ancora supportato nel server)
     indexing_mode: IndexingMode = Field(
         default_factory=lambda: IndexingMode(os.getenv("INDEXING_MODE", "sync").lower())

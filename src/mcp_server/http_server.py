@@ -9,6 +9,7 @@ import uvicorn
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -25,12 +26,14 @@ runtime = None
 mcp_server: Server | None = None
 sse_transport: SseServerTransport | None = None
 streamable_session_manager: StreamableHTTPSessionManager | None = None
+app_config = None
 
 
 def init_components() -> None:
-    global runtime, mcp_server, sse_transport, streamable_session_manager
+    global runtime, mcp_server, sse_transport, streamable_session_manager, app_config
 
     config = get_config()
+    app_config = config
     runtime = build_runtime(config)
 
     mcp_server = Server("llm-memory")
@@ -51,8 +54,13 @@ def init_components() -> None:
     sse_transport = SseServerTransport("/messages/")
     streamable_session_manager = StreamableHTTPSessionManager(
         app=mcp_server,
-        json_response=True,
+        json_response=not config.mcp_sse_enabled,
         stateless=False,
+        security_settings=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=config.mcp_allowed_hosts,
+            allowed_origins=config.mcp_allowed_origins,
+        ),
     )
 
 
@@ -66,6 +74,21 @@ async def lifespan(app: Starlette):
 
 class StreamableHTTPASGIApp:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope.get("type") == "http"
+            and scope.get("path") == "/mcp"
+            and scope.get("method") == "GET"
+            and app_config is not None
+            and not app_config.mcp_sse_enabled
+        ):
+            response = Response(
+                "Method Not Allowed",
+                status_code=405,
+                headers={"Allow": "POST, DELETE"},
+            )
+            await response(scope, receive, send)
+            return
+
         if streamable_session_manager is None:
             response = Response("Server not initialized", status_code=503)
             await response(scope, receive, send)
@@ -102,7 +125,14 @@ async def sse_legacy_endpoint(request: Request):
 
 
 async def health(request: Request):
-    return JSONResponse({"status": "ok", "server": "llm-memory", "api": "v2"})
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "llm-memory",
+            "api": "v2",
+            "mcp_sse_enabled": bool(getattr(app_config, "mcp_sse_enabled", False)),
+        }
+    )
 
 
 routes = [
@@ -117,4 +147,5 @@ app = Starlette(routes=routes, lifespan=lifespan)
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8767, log_level="info")
+    run_config = get_config()
+    uvicorn.run(app, host=run_config.mcp_host, port=run_config.mcp_port, log_level="info")

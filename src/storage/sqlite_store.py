@@ -388,6 +388,8 @@ class SQLiteMemoryStore:
         if not include_invalidated:
             sql.append("AND e.status != ?")
             params.append(EntryStatus.INVALIDATED.value)
+            sql.append("AND e.type != ?")
+            params.append(EntryType.INVALIDATED.value)
 
         sql.append("ORDER BY e.updated_at DESC")
         query = " ".join(sql)
