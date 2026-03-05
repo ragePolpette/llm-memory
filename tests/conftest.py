@@ -33,6 +33,7 @@ def test_config() -> Config:
         default_workspace_id="ws-test",
         default_project_id="prj-test",
         dedup_semantic_threshold=0.92,
+        self_eval_enforced=False,
     )
 
 

@@ -148,6 +148,9 @@ class Config(BaseModel):
     promotion_default_target_tier: Tier = Field(
         default_factory=lambda: Tier(os.getenv("PROMOTION_TARGET_TIER", "tier-3"))
     )
+    self_eval_enforced: bool = Field(
+        default_factory=lambda: _env_bool("MEMORY_SELF_EVAL_ENFORCED", False)
+    )
 
     # Ranking
     ranking_similarity_weight: float = Field(

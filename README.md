@@ -95,7 +95,11 @@ DEDUP_HASH_ENABLED=true
 DEDUP_SEMANTIC_ENABLED=true
 DEDUP_SEMANTIC_THRESHOLD=0.97
 PROMOTION_TARGET_TIER=tier-3
+MEMORY_SELF_EVAL_ENFORCED=false
 ```
+
+`MEMORY_SELF_EVAL_ENFORCED` abilita/disabilita l'enforcement della regola di autovalutazione
+in fase di avvio server. Default `false` (modalita sperimentale non-hardened).
 
 ## Tool MCP (v2)
 
@@ -107,6 +111,34 @@ PROMOTION_TARGET_TIER=tier-3
 - `memory.reembed`
 - `memory.export`
 - `memory.import`
+
+## Autovalutazione memorie (experimental)
+
+`memory.add` arricchisce `metadata` con scoring deterministico:
+
+- gerarchia surprise: `confidence` -> `disagreement` -> `self`
+- novelty: `1 - max_similarity(top_k=5)` con fallback sicuro
+- inference: normalizzazione su `tool_steps + correction_count + inference_level`
+- negative impact boost: `+0.25 * negative_impact`
+- `context_hash` deterministico (SHA-256 troncato a 16 char)
+
+Con `MEMORY_SELF_EVAL_ENFORCED=true`, il server richiede in input:
+
+- `writer_model`
+- `context_fingerprint` (object)
+- `importance` (object con segnali surprise + inference)
+
+Dataset helper (mitigazione feedback loop):
+
+```bash
+python scripts/build_finetune_dataset.py --db ./data/memory.db --output ./data/ft_dataset.jsonl
+```
+
+Lo script applica:
+
+- filtro novelty (`novelty_score >= 0.2`)
+- bucket sampling `60/25/15` (top/mid/low)
+- quota minima esterna (`is_external`) configurabile
 
 Compatibilità legacy:
 

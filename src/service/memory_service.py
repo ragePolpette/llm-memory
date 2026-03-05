@@ -7,7 +7,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from ..config import Config, MemoryScope, Tier
 from ..embedding.embedding_service import EmbeddingProvider
@@ -30,6 +30,11 @@ from ..security.privacy import PrivacyPolicy
 from ..storage.sqlite_store import SQLiteMemoryStore
 from ..vectordb.sqlite_vector_store import SQLiteVectorStore
 from ..interop.memory_markdown import parse_memory_markdown, render_memory_markdown
+from .importance_scoring import (
+    build_importance_metadata,
+    has_inference_signal,
+    has_surprise_signal,
+)
 
 
 @dataclass
@@ -40,6 +45,47 @@ class ActorContext:
     user_id: Optional[str]
     workspace_id: str
     project_id: str
+    writer_model: Optional[str] = None
+    writer_model_source: Optional[str] = None
+
+
+class MemoryInputError(ValueError):
+    """Structured validation error for memory.add payloads."""
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        message: str,
+        missing_fields: Optional[list[str]] = None,
+        retryable: bool = True,
+        details: Optional[dict[str, Any]] = None,
+    ):
+        self.code = code
+        self.message = message
+        self.missing_fields = missing_fields or []
+        self.retryable = retryable
+        self.details = details or {}
+        super().__init__(self.to_json())
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "missing_fields": self.missing_fields,
+            "retryable": self.retryable,
+            "details": self.details,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "error_type": "memory_input_error",
+                **self.to_payload(),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+        )
 
 
 def utc_now_iso() -> str:
@@ -140,6 +186,52 @@ class MemoryService:
                 content = "[ENCRYPTED]"
         return content[:max_chars]
 
+    def _validate_self_eval_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        writer_model: str,
+    ) -> None:
+        if not self.config.self_eval_enforced:
+            return
+
+        missing_fields: list[str] = []
+        context_fingerprint = payload.get("context_fingerprint")
+        if not isinstance(context_fingerprint, dict):
+            missing_fields.append("context_fingerprint")
+
+        importance = payload.get("importance")
+        if not isinstance(importance, dict):
+            missing_fields.append("importance")
+
+        if not writer_model or writer_model == "unknown-model":
+            missing_fields.append("writer_model")
+
+        if missing_fields:
+            raise MemoryInputError(
+                code="MISSING_REQUIRED_FIELDS",
+                message="Self-evaluation requires writer_model, context_fingerprint, and importance payload.",
+                missing_fields=missing_fields,
+            )
+
+        if not has_surprise_signal(payload):
+            raise MemoryInputError(
+                code="MISSING_SURPRISE_SIGNAL",
+                message="importance requires at least one surprise signal.",
+                missing_fields=[
+                    "importance.confidence|predictive_confidence|predictive_confidence_before|proxy_disagreement|disagreement_score|self_rating|surprise_self_rating"
+                ],
+            )
+
+        if not has_inference_signal(payload):
+            raise MemoryInputError(
+                code="MISSING_INFERENCE_SIGNAL",
+                message="importance requires tool_steps, correction_count, inference_level or inference_steps.",
+                missing_fields=[
+                    "importance.tool_steps|importance.correction_count|importance.inference_level|importance.inference_steps|tool_steps|correction_count|inference_level"
+                ],
+            )
+
     async def add(self, payload: dict, actor: ActorContext) -> dict:
         scope = self._scope_from_payload(payload, actor)
         visibility = MemoryScope(payload.get("visibility", payload.get("scope_visibility", "shared")))
@@ -151,22 +243,7 @@ class MemoryService:
         links = [EntryLink(**item) for item in payload.get("links", [])]
         tags = payload.get("tags", [])
         sensitivity_tags = payload.get("sensitivity_tags", [])
-        metadata = payload.get("metadata", {})
         raw_content = payload["content"]
-
-        privacy = self.privacy_policy.apply(
-            content=raw_content,
-            metadata=metadata,
-            sensitivity_tags=sensitivity_tags,
-        )
-
-        stored_content = privacy.content
-        encrypted = False
-        if privacy.should_encrypt:
-            cipher_result = self.cipher.encrypt(privacy.content)
-            stored_content = cipher_result.payload
-            encrypted = cipher_result.encrypted
-
         content_hash = compute_content_hash(raw_content)
 
         if self.config.dedup_hash_enabled:
@@ -181,6 +258,47 @@ class MemoryService:
 
         version = self._current_embedding_version()
         query_vec = (await self.embedding_provider.embed([raw_content]))[0]
+        novelty_computed = True
+        top_similarities: list[float] = []
+
+        try:
+            novelty_candidates = self.vector_store.search(
+                query_vector=query_vec,
+                scope=scope,
+                version_id=version.version_id,
+                limit=5,
+                include_invalidated=False,
+            )
+            top_similarities = [similarity for _, similarity in novelty_candidates]
+        except Exception:
+            novelty_computed = False
+            top_similarities = []
+
+        now_iso = utc_now_iso()
+        metadata = build_importance_metadata(
+            payload=payload,
+            scope=scope,
+            visibility=visibility,
+            top_similarities=top_similarities,
+            novelty_computed=novelty_computed,
+            event_ts_utc=now_iso,
+            actor_agent_id=actor.agent_id,
+            runtime_writer_model=actor.writer_model,
+        )
+        self._validate_self_eval_payload(payload, writer_model=str(metadata.get("writer_model", "")).strip())
+
+        privacy = self.privacy_policy.apply(
+            content=raw_content,
+            metadata=metadata,
+            sensitivity_tags=sensitivity_tags,
+        )
+
+        stored_content = privacy.content
+        encrypted = False
+        if privacy.should_encrypt:
+            cipher_result = self.cipher.encrypt(privacy.content)
+            stored_content = cipher_result.payload
+            encrypted = cipher_result.encrypted
 
         if self.config.dedup_semantic_enabled:
             semantic_matches = self.vector_store.similarity_search(
@@ -192,15 +310,20 @@ class MemoryService:
             )
             if semantic_matches:
                 duplicate_entry, similarity = semantic_matches[0]
+                source_context_hash = str(metadata.get("context_hash", ""))
+                existing_context_hash = str(duplicate_entry.metadata.get("context_hash", ""))
+                same_context = bool(source_context_hash and source_context_hash == existing_context_hash)
                 return {
                     "success": True,
                     "entry_id": duplicate_entry.id,
                     "duplicate_of": duplicate_entry.id,
                     "reason": "semantic-duplicate",
                     "similarity": similarity,
+                    "merge_policy": "local-variant-no-consolidate"
+                    if same_context
+                    else "transferable-candidate-consolidation",
                 }
 
-        now_iso = utc_now_iso()
         entry = MemoryEntry(
             tier=tier,
             scope=scope,
@@ -253,6 +376,12 @@ class MemoryService:
             "embedding_version_id": version.version_id,
             "redacted": entry.redacted,
             "encrypted": entry.encrypted,
+            "writer_model": entry.metadata.get("writer_model"),
+            "context_hash": entry.metadata.get("context_hash"),
+            "importance_score": entry.metadata.get("importance_score"),
+            "importance_class": entry.metadata.get("importance_class"),
+            "novelty_score": entry.metadata.get("novelty_score"),
+            "novelty_computed": entry.metadata.get("novelty_computed"),
         }
 
     def get(self, entry_id: str, actor: ActorContext) -> Optional[MemoryEntry]:

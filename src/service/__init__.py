@@ -1,5 +1,5 @@
 """Service layer exports."""
 
-from .memory_service import ActorContext, MemoryService
+from .memory_service import ActorContext, MemoryInputError, MemoryService
 
-__all__ = ["ActorContext", "MemoryService"]
+__all__ = ["ActorContext", "MemoryInputError", "MemoryService"]
