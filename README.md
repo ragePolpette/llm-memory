@@ -160,10 +160,11 @@ Eseguire via tool MCP `memory.reembed` (incrementale):
 Quando `MEMORY_ENCRYPTION_ENABLED=true`:
 
 1. definisci chiave locale in env indicata da `MEMORY_ENCRYPTION_KEY_ENV`
-2. non hardcodare chiavi nel codice
-3. fare backup separato e protetto della chiave
+2. usa una chiave Fernet valida oppure una passphrase lunga almeno 32 byte
+3. non hardcodare chiavi nel codice
+4. fare backup separato e protetto della chiave
 
-Nota: la cifratura usa `cryptography` (`Fernet`) se disponibile localmente.
+Nota: la cifratura usa `cryptography` (`Fernet`) se disponibile localmente. Le passphrase vengono derivate con PBKDF2-HMAC-SHA256; le chiavi troppo corte vengono rifiutate.
 
 ## Privacy locale best practice
 
