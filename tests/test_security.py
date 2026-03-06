@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 
 import pytest
@@ -31,6 +32,20 @@ async def test_network_guard_blocks_external(service):
         actor,
     )
     assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_network_guard_blocks_asyncio_open_connection(service):
+    with pytest.raises(NetworkBlockedError):
+        await asyncio.open_connection("8.8.8.8", 53)
+
+
+@pytest.mark.asyncio
+async def test_network_guard_blocks_event_loop_create_connection(service):
+    loop = asyncio.get_running_loop()
+
+    with pytest.raises(NetworkBlockedError):
+        await loop.create_connection(asyncio.Protocol, "8.8.8.8", 53)
 
 
 @pytest.mark.asyncio
