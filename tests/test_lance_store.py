@@ -15,6 +15,11 @@ def test_lance_filter_sanitizer_escapes_embedded_quotes():
     assert clause == "context = 'Bob''s note'"
 
 
+def test_lance_filter_sanitizer_allows_and_inside_quoted_literal():
+    clause = LanceVectorStore._sanitize_filters("context = 'rock AND roll' AND scope = 'shared'")
+    assert clause == "context = 'rock AND roll' AND scope = 'shared'"
+
+
 @pytest.mark.parametrize(
     "raw_filter",
     [

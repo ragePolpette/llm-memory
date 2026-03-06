@@ -75,10 +75,49 @@ class LanceVectorStore:
         return f"{field} = '{cls._escape_literal(value)}'"
 
     @classmethod
+    def _split_filter_clauses(cls, filters: str) -> list[str]:
+        clauses: list[str] = []
+        token: list[str] = []
+        in_quote = False
+        index = 0
+
+        while index < len(filters):
+            char = filters[index]
+            if char == "'":
+                token.append(char)
+                if in_quote and index + 1 < len(filters) and filters[index + 1] == "'":
+                    token.append(filters[index + 1])
+                    index += 2
+                    continue
+                in_quote = not in_quote
+                index += 1
+                continue
+
+            if not in_quote and filters[index:index + 3].lower() == "and":
+                prev_char = filters[index - 1] if index > 0 else " "
+                next_char = filters[index + 3] if index + 3 < len(filters) else " "
+                if not (prev_char.isalnum() or prev_char == "_") and not (
+                    next_char.isalnum() or next_char == "_"
+                ):
+                    clause = "".join(token).strip()
+                    if clause:
+                        clauses.append(clause)
+                    token = []
+                    index += 3
+                    continue
+
+            token.append(char)
+            index += 1
+
+        clause = "".join(token).strip()
+        if clause:
+            clauses.append(clause)
+        return clauses
+
+    @classmethod
     def _sanitize_filters(cls, filters: str) -> str:
         clauses: list[str] = []
-        for raw_clause in re.split(r"\bAND\b", filters, flags=re.IGNORECASE):
-            raw_clause = raw_clause.strip()
+        for raw_clause in cls._split_filter_clauses(filters):
             if not raw_clause:
                 continue
             match = cls._FILTER_CLAUSE_RE.fullmatch(raw_clause)

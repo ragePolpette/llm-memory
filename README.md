@@ -73,6 +73,7 @@ EMBEDDING_DIM=384
 MEMORY_ALLOW_OUTBOUND_NETWORK=false
 MEMORY_ENCRYPTION_ENABLED=false
 MEMORY_ENCRYPTION_KEY_ENV=MEMORY_ENCRYPTION_KEY
+MEMORY_IMPORT_EXPORT_BASE_DIR=./data/exchange
 
 # Privacy policy
 MEMORY_PRIVACY_SENSITIVE_TAGS=pii,secret,credential
@@ -100,6 +101,10 @@ MEMORY_SELF_EVAL_ENFORCED=false
 
 `MEMORY_SELF_EVAL_ENFORCED` abilita/disabilita l'enforcement della regola di autovalutazione
 in fase di avvio server. Default `false` (modalita sperimentale non-hardened).
+
+`MEMORY_IMPORT_EXPORT_BASE_DIR` definisce la directory radice per `memory.import` e
+`memory.export`. I path richiesti dai tool devono risolversi all'interno di questa base
+directory; path esterni vengono rifiutati.
 
 ## Tool MCP (v2)
 
