@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from src.config import MemoryScope, Tier
+from src.models import EntryType, MemoryEntry
 from src.service.memory_service import ActorContext
 
 
@@ -87,6 +89,52 @@ async def test_reembed_query_consistency(service):
     after = await service.search("backend metadata", actor, limit=3)
     assert len(after) >= 1
     assert before[0].entry_id == after[0].entry_id
+
+
+def test_promote_merge_skips_missing_base_entry(service, monkeypatch):
+    actor = ActorContext(agent_id="agent-promote", user_id="user-promote", workspace_id="ws-test", project_id="prj-test")
+
+    entry = service.store.list_entries(
+        scope=service.default_scope(agent_id=actor.agent_id, user_id=actor.user_id),
+        limit=1,
+    )
+    if not entry:
+        created = MemoryEntry(
+            tier=Tier.TIER_1,
+            scope=service.default_scope(agent_id=actor.agent_id, user_id=actor.user_id),
+            visibility=MemoryScope.SHARED,
+            type=EntryType.FACT,
+            content="Promote merge safety test",
+            context="promote",
+        )
+        service.store.add_entry(created)
+        entry_id = created.id
+    else:
+        entry_id = entry[0].id
+
+    original_get_entry = service.store.get_entry
+    calls = {"count": 0}
+
+    def flaky_get_entry(target_id: str):
+        calls["count"] += 1
+        if calls["count"] >= 2 and target_id == entry_id:
+            return None
+        return original_get_entry(target_id)
+
+    monkeypatch.setattr(service.store, "get_entry", flaky_get_entry)
+
+    result = service.promote(
+        [entry_id],
+        actor=actor,
+        target_tier=Tier.TIER_3,
+        reason="merge test",
+        merge=True,
+        summary="merged",
+    )
+
+    assert result["success"] is True
+    assert result["promoted"] == [entry_id]
+    assert result["merged_entry_id"] is None
 
 
 @pytest.mark.asyncio

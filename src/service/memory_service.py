@@ -623,7 +623,16 @@ class MemoryService:
 
         merged_entry_id: Optional[str] = None
         if merge and promoted and summary:
-            base_scope = self.store.get_entry(promoted[0]).scope
+            base_entry = self.store.get_entry(promoted[0])
+            if base_entry is None:
+                return {
+                    "success": True,
+                    "promoted": promoted,
+                    "count": len(promoted),
+                    "target_tier": target_tier.value,
+                    "merged_entry_id": None,
+                }
+            base_scope = base_entry.scope
             merged_entry = MemoryEntry(
                 tier=target_tier,
                 scope=base_scope,
