@@ -126,6 +126,14 @@ async def sse_legacy_endpoint(request: Request):
     return Response()
 
 
+async def legacy_sse_method_not_allowed(request: Request):
+    return Response(
+        "Method Not Allowed",
+        status_code=405,
+        headers={"Allow": "GET"},
+    )
+
+
 async def health(request: Request):
     return JSONResponse(
         {
@@ -142,7 +150,7 @@ routes = [
     Route("/mcp", endpoint=streamable_http_app, methods=["GET", "POST", "DELETE"]),
     Route("/sse", sse_legacy_endpoint, methods=["GET"]),
     Mount("/messages/", app=legacy_messages_app),
-    Route("/sse", endpoint=streamable_http_app, methods=["POST", "DELETE"]),
+    Route("/sse", endpoint=legacy_sse_method_not_allowed, methods=["POST", "DELETE"]),
 ]
 
 app = Starlette(routes=routes, lifespan=lifespan)
