@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +22,16 @@ class LanceVectorStore:
     
     LanceDB è embedded, non richiede Docker, ed è ottimizzato per disk-based storage.
     """
+
+    _ALLOWED_FILTER_FIELDS = {
+        "id",
+        "agent_id",
+        "scope",
+        "context",
+        "content_hash",
+        "created_at",
+    }
+    _FILTER_CLAUSE_RE = re.compile(r"^\s*([a-z_]+)\s*=\s*'((?:''|[^'])*)'\s*$", re.IGNORECASE)
     
     def __init__(self, persist_dir: Path, embedding_provider: EmbeddingProvider):
         self.persist_dir = Path(persist_dir)
@@ -52,6 +63,36 @@ class LanceVectorStore:
             logger.warning(f"Table creation skipped: {e}")
         
         self.table = self.db.open_table("memories")
+
+    @classmethod
+    def _escape_literal(cls, value: str) -> str:
+        return value.replace("'", "''")
+
+    @classmethod
+    def _build_equality_clause(cls, field: str, value: str) -> str:
+        if field not in cls._ALLOWED_FILTER_FIELDS:
+            raise ValueError(f"Unsupported LanceDB filter field: {field}")
+        return f"{field} = '{cls._escape_literal(value)}'"
+
+    @classmethod
+    def _sanitize_filters(cls, filters: str) -> str:
+        clauses: list[str] = []
+        for raw_clause in re.split(r"\bAND\b", filters, flags=re.IGNORECASE):
+            raw_clause = raw_clause.strip()
+            if not raw_clause:
+                continue
+            match = cls._FILTER_CLAUSE_RE.fullmatch(raw_clause)
+            if match is None:
+                raise ValueError(
+                    "Unsupported LanceDB filter expression. Only equality clauses joined by AND are allowed."
+                )
+            field, literal = match.groups()
+            normalized_value = literal.replace("''", "'")
+            clauses.append(cls._build_equality_clause(field.lower(), normalized_value))
+
+        if not clauses:
+            raise ValueError("Empty LanceDB filter expression is not allowed.")
+        return " AND ".join(clauses)
     
     async def index(self, memory: Memory) -> None:
         """
@@ -105,7 +146,7 @@ class LanceVectorStore:
         search = self.table.search(query_vec).limit(limit)
         
         if filters:
-            search = search.where(filters)
+            search = search.where(self._sanitize_filters(filters))
         
         results = search.to_list()
         
@@ -134,7 +175,7 @@ class LanceVectorStore:
         try:
             results = (
                 self.table.search()
-                .where(f"content_hash = '{content_hash}'")
+                .where(self._build_equality_clause("content_hash", content_hash))
                 .limit(1)
                 .to_list()
             )
@@ -150,7 +191,7 @@ class LanceVectorStore:
         Nota: questo è un soft delete nell'indice, il file MD rimane.
         """
         try:
-            self.table.delete(f"id = '{memory_id}'")
+            self.table.delete(self._build_equality_clause("id", memory_id))
             logger.info(f"Deleted memory {memory_id} from index")
         except Exception as e:
             logger.error(f"Error deleting memory {memory_id}: {e}")

@@ -29,7 +29,7 @@ MemoryService (governance/orchestrazione)
     |
     +--> Vector Store interface
     |        +--> SQLiteVectorStore (default)
-    |        +--> LanceVectorStore (legacy/optional)
+    |        +--> LanceVectorStore (legacy/optional, equality-only filters hardened)
     |
     +--> EmbeddingProvider interface
              +--> hash-local (default offline hard-safe)
