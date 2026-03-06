@@ -173,9 +173,9 @@ class MemoryService:
             return False
 
         if entry.visibility == MemoryScope.PRIVATE:
-            if entry.scope.user_id and actor.user_id and entry.scope.user_id != actor.user_id:
+            if entry.scope.user_id != actor.user_id:
                 return False
-            if entry.scope.agent_id and entry.scope.agent_id != actor.agent_id:
+            if entry.scope.agent_id != actor.agent_id:
                 return False
         return True
 

@@ -6,6 +6,8 @@ import socket
 
 import pytest
 
+from src.config import MemoryScope, Tier
+from src.models import EntryType, MemoryEntry, ScopeRef
 from src.security.no_network import NetworkBlockedError
 from src.service.memory_service import ActorContext
 
@@ -29,3 +31,45 @@ async def test_network_guard_blocks_external(service):
         actor,
     )
     assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_private_entry_requires_exact_agent_match(service):
+    actor = ActorContext(agent_id="agent-owner", user_id="user-owner", workspace_id="ws-test", project_id="prj-test")
+
+    result = await service.add(
+        {
+            "content": "Memoria privata vincolata all'agente.",
+            "context": "security",
+            "agent_id": actor.agent_id,
+            "tier": "tier-1",
+            "type": "fact",
+            "visibility": "private",
+        },
+        actor,
+    )
+
+    entry = service.get(result["entry_id"], actor)
+    assert entry is not None
+
+
+def test_private_entry_without_agent_id_is_not_globally_readable(service):
+    actor = ActorContext(agent_id="agent-reader", user_id="user-owner", workspace_id="ws-test", project_id="prj-test")
+
+    entry = MemoryEntry(
+        tier=Tier.TIER_1,
+        scope=ScopeRef(
+            workspace_id=actor.workspace_id,
+            project_id=actor.project_id,
+            user_id=actor.user_id,
+            agent_id=None,
+        ),
+        visibility=MemoryScope.PRIVATE,
+        type=EntryType.FACT,
+        content="Legacy private entry without agent id",
+        context="security",
+    )
+    service.store.add_entry(entry)
+
+    with pytest.raises(PermissionError, match="Read denied by scope policy"):
+        service.get(entry.id, actor)
