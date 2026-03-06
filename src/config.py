@@ -101,6 +101,12 @@ class Config(BaseModel):
     sqlite_db_path: Path = Field(
         default_factory=lambda: _project_path_from_env("MEMORY_SQLITE_PATH", "./data/memory.db")
     )
+    import_export_base_dir: Path = Field(
+        default_factory=lambda: _project_path_from_env(
+            "MEMORY_IMPORT_EXPORT_BASE_DIR",
+            "./data/exchange",
+        )
+    )
 
     # Local model directories
     mcp_models_dir: Path = Field(

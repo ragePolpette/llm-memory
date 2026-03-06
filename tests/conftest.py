@@ -26,6 +26,7 @@ def test_config() -> Config:
         storage_dir=tmpdir / "memories",
         lancedb_dir=tmpdir / "lancedb",
         sqlite_db_path=tmpdir / "memory.db",
+        import_export_base_dir=tmpdir / "exchange",
         embedding_provider="hash-local",
         embedding_model="local-hash-test",
         embedding_dim=96,

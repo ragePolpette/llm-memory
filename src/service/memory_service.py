@@ -111,6 +111,19 @@ class MemoryService:
         self.privacy_policy = privacy_policy
         self.cipher = cipher
 
+    def _resolve_exchange_path(self, path: Path, *, must_exist: bool) -> Path:
+        base_dir = self.config.import_export_base_dir.resolve()
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = base_dir / candidate
+
+        resolved = candidate.resolve(strict=must_exist)
+        if not resolved.is_relative_to(base_dir):
+            raise ValueError(
+                f"Path '{path}' escapes configured import/export base directory '{base_dir}'."
+            )
+        return resolved
+
     def default_scope(self, *, agent_id: Optional[str] = None, user_id: Optional[str] = None) -> ScopeRef:
         return ScopeRef(
             workspace_id=self.config.default_workspace_id,
@@ -698,12 +711,14 @@ class MemoryService:
         actor: ActorContext,
     ) -> ExportResult:
         fmt = fmt.lower()
+        resolved_path = self._resolve_exchange_path(path, must_exist=False)
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
         entries = self.store.export_entries(
             scope=ScopeRef(workspace_id=actor.workspace_id, project_id=actor.project_id)
         )
 
         if fmt == "jsonl":
-            with path.open("w", encoding="utf-8") as f:
+            with resolved_path.open("w", encoding="utf-8") as f:
                 for entry in entries:
                     f.write(json.dumps(entry.model_dump(mode="json"), ensure_ascii=True, sort_keys=True))
                     f.write("\n")
@@ -711,11 +726,11 @@ class MemoryService:
 
         elif fmt == "memory.md":
             markdown = render_memory_markdown(entries)
-            path.write_text(markdown, encoding="utf-8")
+            resolved_path.write_text(markdown, encoding="utf-8")
             count = len(entries)
 
         elif fmt == "sqlite":
-            shutil.copy2(self.store.db_path, path)
+            shutil.copy2(self.store.db_path, resolved_path)
             count = len(entries)
 
         else:
@@ -725,10 +740,10 @@ class MemoryService:
             AuditEvent(
                 action="export",
                 actor=actor.agent_id,
-                payload={"path": str(path), "format": fmt, "count": count},
+                payload={"path": str(resolved_path), "format": fmt, "count": count},
             )
         )
-        return ExportResult(path=str(path), format=fmt, count=count)
+        return ExportResult(path=str(resolved_path), format=fmt, count=count)
 
     async def import_data(
         self,
@@ -738,6 +753,7 @@ class MemoryService:
         target_scope: Optional[ScopeRef] = None,
     ) -> ImportResult:
         fmt = fmt.lower()
+        resolved_path = self._resolve_exchange_path(path, must_exist=True)
         imported = 0
         duplicates = 0
 
@@ -749,10 +765,14 @@ class MemoryService:
         )
 
         if fmt == "jsonl":
-            rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            rows = [
+                json.loads(line)
+                for line in resolved_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
             entries = [MemoryEntry(**row) for row in rows]
         elif fmt == "memory.md":
-            markdown = path.read_text(encoding="utf-8")
+            markdown = resolved_path.read_text(encoding="utf-8")
             entries = parse_memory_markdown(markdown, base_scope=scope)
         else:
             raise ValueError(f"Unsupported import format: {fmt}")
@@ -790,7 +810,7 @@ class MemoryService:
                 action="import",
                 actor=actor.agent_id,
                 payload={
-                    "path": str(path),
+                    "path": str(resolved_path),
                     "format": fmt,
                     "imported": imported,
                     "duplicates": duplicates,
@@ -799,7 +819,7 @@ class MemoryService:
         )
 
         return ImportResult(
-            path=str(path),
+            path=str(resolved_path),
             format=fmt,
             imported=imported,
             duplicates=duplicates,

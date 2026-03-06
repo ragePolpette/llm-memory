@@ -52,7 +52,7 @@ async def test_import_export_memory_md_deterministic(service, tmp_path: Path):
         actor,
     )
 
-    md_path = tmp_path / "memory.md"
+    md_path = service.config.import_export_base_dir / "memory.md"
     export_result = service.export_data(md_path, "memory.md", actor)
     assert export_result.count >= 1
 
@@ -93,7 +93,8 @@ async def test_reembed_query_consistency(service):
 async def test_import_jsonl(service, tmp_path: Path):
     actor = ActorContext(agent_id="agent-jsonl", user_id="user-jsonl", workspace_id="ws-test", project_id="prj-test")
 
-    jsonl_path = tmp_path / "memory.jsonl"
+    jsonl_path = service.config.import_export_base_dir / "memory.jsonl"
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     jsonl_path.write_text(
         '{"id":"e-1","tier":"tier-2","scope":{"workspace_id":"ws-test","project_id":"prj-test","user_id":"user-jsonl","agent_id":"agent-jsonl"},"visibility":"shared","source":"test","type":"fact","status":"active","content":"JSONL import test","context":"import","tags":[],"sensitivity_tags":[],"metadata":{},"links":[],"confidence":0.7,"created_at":"2026-01-01T00:00:00+00:00","updated_at":"2026-01-01T00:00:00+00:00","content_hash":"abc","embedding_version_id":null,"encrypted":false,"redacted":false}\n',
         encoding="utf-8",
@@ -104,3 +105,25 @@ async def test_import_jsonl(service, tmp_path: Path):
 
     entries = service.list_entries(actor, limit=10)
     assert any(entry.id == "e-1" for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_export_rejects_paths_outside_exchange_base(service, tmp_path: Path):
+    actor = ActorContext(agent_id="agent-escape", user_id="user-escape", workspace_id="ws-test", project_id="prj-test")
+
+    outside_path = tmp_path / ".." / "escape.md"
+
+    with pytest.raises(ValueError, match="escapes configured import/export base directory"):
+        service.export_data(outside_path, "memory.md", actor)
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_paths_outside_exchange_base(service, tmp_path: Path):
+    actor = ActorContext(agent_id="agent-escape", user_id="user-escape", workspace_id="ws-test", project_id="prj-test")
+
+    outside_path = tmp_path / ".." / "escape.jsonl"
+    outside_path.parent.mkdir(parents=True, exist_ok=True)
+    outside_path.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="escapes configured import/export base directory"):
+        await service.import_data(outside_path, "jsonl", actor)
