@@ -21,6 +21,9 @@ class MemoryRuntime:
     vector_store: SQLiteVectorStore
     service: MemoryService
 
+    async def prewarm(self) -> None:
+        await self.service.embedding_provider.prepare()
+
 
 def build_runtime(config: Config) -> MemoryRuntime:
     """Costruisce runtime locale completo."""

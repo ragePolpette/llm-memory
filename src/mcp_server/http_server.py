@@ -67,6 +67,8 @@ def init_components() -> None:
 @asynccontextmanager
 async def lifespan(app: Starlette):
     init_components()
+    if runtime is not None:
+        await runtime.prewarm()
     assert streamable_session_manager is not None
     async with streamable_session_manager.run():
         yield

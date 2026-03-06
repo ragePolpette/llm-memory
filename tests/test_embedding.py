@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from src.embedding.embedding_service import EmbeddingProvider
+from src.embedding.embedding_service import EmbeddingProvider, SentenceTransformerProvider
 from src.models import ScopeRef
 from src.service.memory_service import ActorContext
 
@@ -106,3 +108,38 @@ async def test_reembed_skips_permanent_failures_without_looping(service):
     embeddings = service.store.list_embeddings(result.version_id, scope=scope, include_invalidated=True)
     embedded_ids = {entry.id for entry, _ in embeddings}
     assert success["entry_id"] in embedded_ids
+
+
+def test_sentence_transformer_dimension_uses_hint_without_loading(monkeypatch):
+    provider = SentenceTransformerProvider("sentence-transformers/test", dim_hint=321)
+
+    def fail_load():
+        raise AssertionError("dimension() should not trigger model loading")
+
+    monkeypatch.setattr(provider, "_load_model", fail_load)
+
+    assert provider.dimension() == 321
+    assert provider.fingerprint()
+
+
+@pytest.mark.asyncio
+async def test_sentence_transformer_prepare_loads_model_via_to_thread(monkeypatch):
+    provider = SentenceTransformerProvider("sentence-transformers/test", dim_hint=123)
+    calls: list[str] = []
+
+    def fake_load_model():
+        calls.append("load")
+        provider._model = object()
+        provider._dimension = 456
+
+    async def fake_to_thread(func, *args, **kwargs):
+        calls.append("to_thread")
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(provider, "_load_model", fake_load_model)
+    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+    await provider.prepare()
+
+    assert calls == ["to_thread", "load"]
+    assert provider.dimension() == 456

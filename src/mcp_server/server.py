@@ -42,6 +42,7 @@ class MemoryServer:
         )
 
     async def run(self):
+        await self.runtime.prewarm()
         async with stdio_server() as (read_stream, write_stream):
             logger.info("MCP server running on stdio")
             await self.server.run(

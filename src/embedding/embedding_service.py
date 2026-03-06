@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from abc import ABC, abstractmethod
@@ -12,6 +13,9 @@ from ..config import Config, EmbeddingProviderKind
 
 class EmbeddingProvider(ABC):
     """Interfaccia astratta provider embedding locale."""
+
+    async def prepare(self) -> None:
+        """Prepara il provider prima di servire richieste."""
 
     @abstractmethod
     async def embed(self, texts: list[str]) -> list[list[float]]:
@@ -97,6 +101,7 @@ class SentenceTransformerProvider(EmbeddingProvider):
         self.normalize = normalize
         self._model = None
         self._dimension: int = dim_hint
+        self._load_lock = asyncio.Lock()
 
     def _load_model(self):
         if self._model is not None:
@@ -127,12 +132,22 @@ class SentenceTransformerProvider(EmbeddingProvider):
         if dim:
             self._dimension = int(dim)
 
+    async def prepare(self) -> None:
+        if self._model is not None:
+            return
+
+        async with self._load_lock:
+            if self._model is not None:
+                return
+            await asyncio.to_thread(self._load_model)
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
 
-        self._load_model()
-        vectors = self._model.encode(
+        await self.prepare()
+        vectors = await asyncio.to_thread(
+            self._model.encode,
             texts,
             batch_size=self.batch_size,
             normalize_embeddings=self.normalize,
@@ -147,7 +162,6 @@ class SentenceTransformerProvider(EmbeddingProvider):
         return [float(v) for v in values]
 
     def dimension(self) -> int:
-        self._load_model()
         return self._dimension
 
     def provider_id(self) -> str:
@@ -158,7 +172,7 @@ class SentenceTransformerProvider(EmbeddingProvider):
 
     def fingerprint(self) -> str:
         raw = (
-            f"{self.provider_id()}::{self.model_name}::{self.dimension()}::"
+            f"{self.provider_id()}::{self.model_name}::{self._dimension}::"
             f"{self.device or 'auto'}::{self.batch_size}::{self.normalize}"
         )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
