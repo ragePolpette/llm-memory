@@ -108,6 +108,40 @@ async def test_import_jsonl(service, tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_import_jsonl_rejects_unsupported_top_level_fields(service):
+    actor = ActorContext(agent_id="agent-jsonl", user_id="user-jsonl", workspace_id="ws-test", project_id="prj-test")
+
+    jsonl_path = service.config.import_export_base_dir / "memory-extra.jsonl"
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    jsonl_path.write_text(
+        '{"id":"e-unsupported","content":"JSONL import test","context":"import","scope":{"workspace_id":"ws-test","project_id":"prj-test"},"visibility":"shared","extra_field":"boom"}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported fields: extra_field"):
+        await service.import_data(jsonl_path, "jsonl", actor)
+
+
+@pytest.mark.asyncio
+async def test_import_jsonl_sanitizes_metadata_keys(service):
+    actor = ActorContext(agent_id="agent-jsonl", user_id="user-jsonl", workspace_id="ws-test", project_id="prj-test")
+
+    jsonl_path = service.config.import_export_base_dir / "memory-metadata.jsonl"
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    jsonl_path.write_text(
+        '{"id":"e-2","tier":"tier-2","scope":{"workspace_id":"ws-test","project_id":"prj-test","user_id":"user-jsonl","agent_id":"agent-jsonl"},"visibility":"shared","source":"test","type":"fact","status":"active","content":"JSONL metadata sanitize test","context":"import","tags":[],"sensitivity_tags":[],"metadata":{"password":"secret","safe":"ok"},"links":[],"confidence":0.7,"created_at":"2026-01-01T00:00:00+00:00","updated_at":"2026-01-01T00:00:00+00:00","content_hash":"def","embedding_version_id":null,"encrypted":false,"redacted":false}\n',
+        encoding="utf-8",
+    )
+
+    result = await service.import_data(jsonl_path, "jsonl", actor)
+    assert result.imported == 1
+
+    entry = service.get("e-2", actor)
+    assert entry is not None
+    assert entry.metadata == {"safe": "ok"}
+
+
+@pytest.mark.asyncio
 async def test_export_rejects_paths_outside_exchange_base(service, tmp_path: Path):
     actor = ActorContext(agent_id="agent-escape", user_id="user-escape", workspace_id="ws-test", project_id="prj-test")
 

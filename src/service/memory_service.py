@@ -95,6 +95,8 @@ def utc_now_iso() -> str:
 class MemoryService:
     """Servizio principale memoria persistente locale."""
 
+    _JSONL_IMPORT_ALLOWED_FIELDS = frozenset(MemoryEntry.model_fields.keys())
+
     def __init__(
         self,
         config: Config,
@@ -123,6 +125,31 @@ class MemoryService:
                 f"Path '{path}' escapes configured import/export base directory '{base_dir}'."
             )
         return resolved
+
+    def _sanitize_import_metadata(self, metadata: Any) -> dict[str, Any]:
+        if metadata is None:
+            return {}
+        if not isinstance(metadata, dict):
+            raise ValueError("JSONL import requires metadata to be an object.")
+        return {
+            key: value
+            for key, value in metadata.items()
+            if key.lower() not in self.privacy_policy.drop_metadata_keys
+        }
+
+    def _parse_jsonl_import_row(self, row: Any, *, line_number: int) -> MemoryEntry:
+        if not isinstance(row, dict):
+            raise ValueError(f"JSONL import row {line_number} must be an object.")
+
+        unexpected_fields = sorted(set(row.keys()) - self._JSONL_IMPORT_ALLOWED_FIELDS)
+        if unexpected_fields:
+            raise ValueError(
+                f"JSONL import row {line_number} contains unsupported fields: {', '.join(unexpected_fields)}"
+            )
+
+        sanitized_row = dict(row)
+        sanitized_row["metadata"] = self._sanitize_import_metadata(sanitized_row.get("metadata"))
+        return MemoryEntry(**sanitized_row)
 
     def default_scope(self, *, agent_id: Optional[str] = None, user_id: Optional[str] = None) -> ScopeRef:
         return ScopeRef(
@@ -770,7 +797,10 @@ class MemoryService:
                 for line in resolved_path.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
-            entries = [MemoryEntry(**row) for row in rows]
+            entries = [
+                self._parse_jsonl_import_row(row, line_number=index)
+                for index, row in enumerate(rows, start=1)
+            ]
         elif fmt == "memory.md":
             markdown = resolved_path.read_text(encoding="utf-8")
             entries = parse_memory_markdown(markdown, base_scope=scope)
