@@ -193,6 +193,12 @@ class MemoryService:
             agent_id=scope_payload.get("agent_id", actor.agent_id),
         )
 
+    @staticmethod
+    def _has_usable_embedding(vector: Any) -> bool:
+        if not isinstance(vector, list) or not vector:
+            return False
+        return any(float(component) != 0.0 for component in vector)
+
     def _can_read(self, actor: ActorContext, entry: MemoryEntry) -> bool:
         if entry.scope.workspace_id != actor.workspace_id:
             return False
@@ -687,9 +693,15 @@ class MemoryService:
         processed = 0
         skipped = 0
         resumed = True
+        failed_entry_ids: set[str] = set()
 
         while True:
-            pending = self.store.list_entries_missing_embedding(version_id=version_id, limit=batch_size)
+            fetch_limit = batch_size + len(failed_entry_ids)
+            pending_candidates = self.store.list_entries_missing_embedding(
+                version_id=version_id,
+                limit=fetch_limit,
+            )
+            pending = [entry for entry in pending_candidates if entry.id not in failed_entry_ids][:batch_size]
             if not pending:
                 break
 
@@ -701,14 +713,17 @@ class MemoryService:
                     except Exception:
                         plaintexts.append("")
                         skipped += 1
+                        failed_entry_ids.add(entry.id)
                 else:
                     plaintexts.append(entry.content)
 
             vectors = await self.embedding_provider.embed(plaintexts)
             now_iso = utc_now_iso()
-            for entry, vector in zip(pending, vectors):
-                if not vector:
+            for index, entry in enumerate(pending):
+                vector = vectors[index] if index < len(vectors) else []
+                if not self._has_usable_embedding(vector):
                     skipped += 1
+                    failed_entry_ids.add(entry.id)
                     continue
                 self.vector_store.upsert(
                     entry_id=entry.id,
@@ -727,6 +742,7 @@ class MemoryService:
                     "version_id": version_id,
                     "processed": processed,
                     "skipped": skipped,
+                    "failed_entries": len(failed_entry_ids),
                     "remaining": remaining,
                 },
             )
