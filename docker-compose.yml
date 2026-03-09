@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  llm-memory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llm-memory-server
+    
+    # Variabili di ambiente (sovrascrivi quelle del Dockerfile)
+    environment:
+      - MEMORY_STORAGE_DIR=/data/memories
+      - LANCEDB_DIR=/data/lancedb
+      - EMBEDDING_MODEL=intfloat/multilingual-e5-small
+      - EMBEDDING_DIM=384
+      - INDEXING_MODE=sync
+      - HYBRID_THRESHOLD_BYTES=1024
+    
+    # Volume per persistenza dati
+    volumes:
+      - ./data:/data
+      - ./logs:/data/logs
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Stdin/stdout per MCP (importante!)
+    stdin_open: true
+    tty: true
+    
+    # Opzionale: limiti risorse
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+    
+    # Opzionale: network (se in futuro serve comunicazione tra container)
+    # networks:
+    #   - llm-network
+
+# Opzionale: network personalizzato
+# networks:
+#   llm-network:
+#     driver: bridge
+
+# Volume nominato (alternativa a bind mount)
+# volumes:
+#   llm-data:
