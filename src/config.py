@@ -10,16 +10,8 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class IndexingMode(str, Enum):
-    """Modalità di indicizzazione."""
-
-    SYNC = "sync"
-    ASYNC = "async"
-    HYBRID = "hybrid"
-
-
 class MemoryScope(str, Enum):
-    """Scope legacy (compatibilità API v1)."""
+    """Visibilita della memoria nel runtime v2."""
 
     PRIVATE = "private"
     SHARED = "shared"
@@ -44,7 +36,6 @@ class VectorBackend(str, Enum):
     """Backend vector store."""
 
     SQLITE = "sqlite"
-    LANCEDB = "lancedb"
 
 
 class EmbeddingProviderKind(str, Enum):
@@ -83,15 +74,7 @@ def _env_csv(key: str, default: list[str]) -> list[str]:
 class Config(BaseModel):
     """Configurazione principale del sistema."""
 
-    # Legacy storage (v1)
-    storage_dir: Path = Field(
-        default_factory=lambda: _project_path_from_env("MEMORY_STORAGE_DIR", "./memories")
-    )
-    lancedb_dir: Path = Field(
-        default_factory=lambda: _project_path_from_env("LANCEDB_DIR", "./data/lancedb")
-    )
-
-    # Nuovo storage (v2)
+    # Runtime storage (v2)
     storage_backend: StorageBackend = Field(
         default_factory=lambda: StorageBackend(os.getenv("MEMORY_STORAGE_BACKEND", "sqlite"))
     )
@@ -225,15 +208,6 @@ class Config(BaseModel):
             ],
         )
     )
-
-    # Indexing (legacy, ancora supportato nel server)
-    indexing_mode: IndexingMode = Field(
-        default_factory=lambda: IndexingMode(os.getenv("INDEXING_MODE", "sync").lower())
-    )
-    hybrid_threshold_bytes: int = Field(
-        default_factory=lambda: int(os.getenv("HYBRID_THRESHOLD_BYTES", "1024"))
-    )
-    queue_max_size: int = Field(default_factory=lambda: int(os.getenv("QUEUE_MAX_SIZE", "1000")))
 
     model_config = ConfigDict(use_enum_values=True)
 

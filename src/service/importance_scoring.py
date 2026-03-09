@@ -241,6 +241,7 @@ def build_importance_metadata(
     visibility: MemoryScope,
     top_similarities: list[float],
     novelty_computed: bool,
+    novelty_status: str = "computed",
     event_ts_utc: str,
     actor_agent_id: str,
     runtime_writer_model: Optional[str] = None,
@@ -267,18 +268,21 @@ def build_importance_metadata(
     surprise_score, surprise_source, signal_quality = _compute_surprise(payload)
     inference_score, inference_level, tool_steps, correction_count = _compute_inference(payload)
 
-    if not novelty_computed:
-        novelty_score = 1.0
+    if novelty_status == "failed" or not novelty_computed:
+        novelty_score: Optional[float] = None
+        novelty_signal = 0.0
     elif not top_similarities:
         novelty_score = 1.0
+        novelty_signal = novelty_score
     else:
         novelty_score = 1.0 - _clamp01(max(top_similarities), default=0.0)
-    novelty_score = _clamp01(novelty_score, default=1.0)
+        novelty_score = _clamp01(novelty_score, default=0.0)
+        novelty_signal = novelty_score
 
     if surprise_source == "confidence":
-        base = 0.45 * surprise_score + 0.35 * novelty_score + 0.20 * inference_score
+        base = 0.45 * surprise_score + 0.35 * novelty_signal + 0.20 * inference_score
     else:
-        base = 0.20 * surprise_score + 0.45 * novelty_score + 0.35 * inference_score
+        base = 0.20 * surprise_score + 0.45 * novelty_signal + 0.35 * inference_score
 
     negative_impact = _compute_negative_impact(payload)
     score_with_neg = base + 0.25 * negative_impact
@@ -306,7 +310,8 @@ def build_importance_metadata(
             "surprise_source": surprise_source,
             "signal_quality": signal_quality,
             "surprise_score": round(surprise_score, 6),
-            "novelty_score": round(novelty_score, 6),
+            "novelty_score": round(novelty_score, 6) if novelty_score is not None else None,
+            "novelty_status": novelty_status,
             "inference_score": round(inference_score, 6),
             "inference_level": inference_level,
             "tool_steps": tool_steps,

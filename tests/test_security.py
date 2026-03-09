@@ -22,7 +22,7 @@ async def test_network_guard_blocks_external(service):
     actor = ActorContext(agent_id="agent-sec", user_id="user-sec", workspace_id="ws-test", project_id="prj-test")
     result = await service.add(
         {
-            "content": "Dato locale senza rete",
+            "content": "Il sistema opera in modalita locale senza rete outbound.",
             "context": "security",
             "agent_id": actor.agent_id,
             "tier": "tier-1",
@@ -54,7 +54,7 @@ async def test_private_entry_requires_exact_agent_match(service):
 
     result = await service.add(
         {
-            "content": "Memoria privata vincolata all'agente.",
+            "content": "Il sistema richiede che la memoria privata sia vincolata all agente.",
             "context": "security",
             "agent_id": actor.agent_id,
             "tier": "tier-1",

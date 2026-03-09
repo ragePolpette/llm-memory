@@ -1,4 +1,4 @@
-"""Definizione tools MCP v2 + wrapper legacy v1."""
+"""Definizione tools MCP v2."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _actor_from_args(args: dict, service: MemoryService) -> ActorContext:
 
 
 def register_tools(server: Server, memory_service: MemoryService):
-    """Registra tool MCP v2 e compatibilità v1."""
+    """Registra tool MCP v2."""
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -273,62 +273,6 @@ def register_tools(server: Server, memory_service: MemoryService):
                     "required": ["path", "format", "agent_id"],
                 },
             ),
-            # ---- wrapper legacy v1 ----
-            Tool(
-                name="memory_write",
-                description="Compat legacy v1 -> memory.add (memoria operativa)",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "content": {"type": "string"},
-                        "context": {"type": "string"},
-                        "agent_id": {"type": "string"},
-                        "scope": {"type": "string", "enum": ["private", "shared", "global"], "default": "shared"},
-                        "tags": {"type": "array", "items": {"type": "string"}},
-                        "session_id": {"type": "string"},
-                        "writer_model": {"type": "string"},
-                    },
-                    "required": ["content", "context", "agent_id"],
-                },
-            ),
-            Tool(
-                name="memory_search",
-                description="Compat legacy v1 -> memory.search (memoria operativa)",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"},
-                        "agent_id": {"type": "string"},
-                        "limit": {"type": "integer", "default": 10},
-                    },
-                    "required": ["query", "agent_id"],
-                },
-            ),
-            Tool(
-                name="memory_read",
-                description="Compat legacy v1 -> memory.get (memoria operativa)",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "memory_id": {"type": "string"},
-                        "agent_id": {"type": "string"},
-                    },
-                    "required": ["memory_id", "agent_id"],
-                },
-            ),
-            Tool(
-                name="memory_list",
-                description="Compat legacy v1 listing (memorie operative)",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "agent_id": {"type": "string"},
-                        "limit": {"type": "integer", "default": 50},
-                        "tier": {"type": "string", "enum": ["tier-1", "tier-2", "tier-3"]},
-                    },
-                    "required": ["agent_id"],
-                },
-            ),
         ]
 
     @server.call_tool()
@@ -349,6 +293,7 @@ def register_tools(server: Server, memory_service: MemoryService):
                         "Non salvare memorie di contesto temporaneo conversazionale",
                         "Non e' un indicizzatore di codice repository",
                         "Per contesto codice/documenti usare llm-context",
+                        "La persistenza e' deny-by-default e richiede superamento della policy centrale",
                     ],
                     "what_to_store": [
                         "Decisioni operative durature",
@@ -387,7 +332,7 @@ def register_tools(server: Server, memory_service: MemoryService):
 
         if name == "memory.add":
             try:
-                payload = await memory_service.add(arguments, actor)
+                payload = await memory_service.add(arguments, actor, write_path="add")
             except MemoryInputError as exc:
                 raise ValueError(exc.to_json()) from exc
             payload["api_version"] = "v2"
@@ -453,83 +398,5 @@ def register_tools(server: Server, memory_service: MemoryService):
                 actor=actor,
             )
             return _json_text({"api_version": "v2", **result.model_dump(mode="json")})
-
-        # ----- legacy wrappers -----
-        if name == "memory_write":
-            payload = {
-                "content": arguments["content"],
-                "context": arguments.get("context", ""),
-                "agent_id": arguments["agent_id"],
-                "visibility": arguments.get("scope", "shared"),
-                "tags": arguments.get("tags", []),
-                "type": "fact",
-                "tier": "tier-2",
-                "metadata": {"session_id": arguments.get("session_id")},
-                "writer_model": arguments.get("writer_model", "legacy-unknown"),
-                "scope_label": "shared",
-                "context_fingerprint": {
-                    "conversation_id": arguments.get("session_id") or "",
-                    "task_id": "legacy-memory_write",
-                    "retrieved_ids": [],
-                    "tool_trace_fingerprint": "legacy",
-                    "prompt_fingerprint": "legacy",
-                },
-                "importance": {
-                    "self_rating": 0.5,
-                    "inference_level": 1,
-                    "negative_impact": 0.0,
-                },
-            }
-            try:
-                result = await memory_service.add(payload, actor)
-            except MemoryInputError as exc:
-                raise ValueError(exc.to_json()) from exc
-            return _json_text({"api_version": "v1", "result": result})
-
-        if name == "memory_search":
-            bundles = await memory_service.search(
-                query=arguments["query"],
-                actor=actor,
-                limit=int(arguments.get("limit", 10)),
-            )
-            legacy = [
-                {
-                    "memory_id": bundle.entry_id,
-                    "score": bundle.score,
-                    "snippet": bundle.snippet,
-                    "tier": bundle.tier.value,
-                    "status": bundle.status.value,
-                }
-                for bundle in bundles
-            ]
-            return _json_text({"api_version": "v1", "count": len(legacy), "results": legacy})
-
-        if name == "memory_read":
-            entry = memory_service.get(arguments["memory_id"], actor)
-            return _json_text({"api_version": "v1", "entry": entry.model_dump(mode="json") if entry else None})
-
-        if name == "memory_list":
-            entries = memory_service.list_entries(
-                actor=actor,
-                limit=int(arguments.get("limit", 50)),
-                tier=arguments.get("tier"),
-            )
-            return _json_text(
-                {
-                    "api_version": "v1",
-                    "count": len(entries),
-                    "entries": [
-                        {
-                            "memory_id": entry.id,
-                            "context": entry.context,
-                            "scope": entry.visibility.value,
-                            "tier": entry.tier.value,
-                            "created_at": entry.created_at,
-                            "content_preview": entry.content[:200],
-                        }
-                        for entry in entries
-                    ],
-                }
-            )
 
         raise ValueError(f"Unknown tool: {name}")

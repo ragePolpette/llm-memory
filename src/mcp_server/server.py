@@ -26,7 +26,7 @@ logger = structlog.get_logger()
 
 
 class MemoryServer:
-    """Server MCP locale con tool v2 e compat legacy."""
+    """Server MCP locale con runtime v2."""
 
     def __init__(self):
         config = get_config()
