@@ -30,6 +30,8 @@ ENV/
 .vscode/
 .idea/
 .agent/
+.claude/
+claude.md
 *.swp
 *.swo
 
@@ -66,6 +68,7 @@ config.local.*
 
 # Logs
 *.log
+logs/
 
 # OS
 .DS_Store
