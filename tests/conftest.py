@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import tempfile
+import sys
 from pathlib import Path
 
 import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.bootstrap import build_runtime
 from src.config import Config
@@ -23,8 +28,6 @@ def _cleanup_network_guard():
 def test_config() -> Config:
     tmpdir = Path(tempfile.mkdtemp())
     return Config(
-        storage_dir=tmpdir / "memories",
-        lancedb_dir=tmpdir / "lancedb",
         sqlite_db_path=tmpdir / "memory.db",
         import_export_base_dir=tmpdir / "exchange",
         embedding_provider="hash-local",

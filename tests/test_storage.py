@@ -46,7 +46,7 @@ async def test_scope_isolation(service):
 
     await service.add(
         {
-            "content": "Dato privato progetto A",
+            "content": "Il progetto A richiede una memoria privata dedicata all agente proprietario.",
             "agent_id": actor_a.agent_id,
             "scope": {
                 "workspace_id": "ws-test",

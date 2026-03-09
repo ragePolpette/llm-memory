@@ -13,7 +13,7 @@
 - Novelty:
   - `1 - max_similarity(top_k=5)`
   - if no memories: `1.0`
-  - if similarity cannot be computed: `1.0`, `novelty_computed=false`
+  - if similarity cannot be computed: `novelty_score = null`, `novelty_status = failed`, `novelty_computed=false`
 - Inference:
   - normalize `tool_steps + correction_count + inference_level`
   - max: `10 + 5 + 5`
@@ -36,6 +36,7 @@
 - `signal_quality`
 - `surprise_score`
 - `novelty_score`
+- `novelty_status`
 - `inference_score`
 - `inference_level`
 - `negative_impact`
@@ -56,5 +57,6 @@
 
 ## Bias-loop mitigation
 - `novelty_score < 0.2` should be excluded from FT dataset.
+- `novelty_score = null` must be treated as unknown and excluded from novelty-based selection.
 - Keep external quota (`is_external=true`) in dataset selection.
 - Apply bucket mix for fine-tuning selection (top/mid/low).

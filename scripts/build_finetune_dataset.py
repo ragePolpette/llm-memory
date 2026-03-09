@@ -16,7 +16,7 @@ class Candidate:
     content: str
     metadata: dict
     importance_score: int
-    novelty_score: float
+    novelty_score: float | None
     is_external: bool
 
 
@@ -39,7 +39,11 @@ def load_candidates(db_path: Path) -> list[Candidate]:
     for row in rows:
         metadata = json.loads(row["metadata_json"] or "{}")
         importance_score = int(metadata.get("importance_score", 0))
-        novelty_score = float(metadata.get("novelty_score", 1.0))
+        novelty_raw = metadata.get("novelty_score")
+        try:
+            novelty_score = float(novelty_raw) if novelty_raw is not None else None
+        except (TypeError, ValueError):
+            novelty_score = None
         is_external = bool(metadata.get("is_external", False))
         candidates.append(
             Candidate(
@@ -47,7 +51,7 @@ def load_candidates(db_path: Path) -> list[Candidate]:
                 content=row["content"],
                 metadata=metadata,
                 importance_score=max(0, min(100, importance_score)),
-                novelty_score=max(0.0, min(1.0, novelty_score)),
+                novelty_score=max(0.0, min(1.0, novelty_score)) if novelty_score is not None else None,
                 is_external=is_external,
             )
         )
@@ -111,7 +115,7 @@ def build_dataset(
     external_min_ratio: float,
     seed: int,
 ) -> list[Candidate]:
-    filtered = [c for c in candidates if c.novelty_score >= novelty_min]
+    filtered = [c for c in candidates if c.novelty_score is not None and c.novelty_score >= novelty_min]
     if not filtered:
         return []
 
