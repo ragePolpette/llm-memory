@@ -35,6 +35,12 @@ from .importance_scoring import (
     has_inference_signal,
     has_surprise_signal,
 )
+from .persistence_policy import (
+    POLICY_VERSION,
+    PersistenceDecision,
+    classify_internal_write,
+    classify_persistence,
+)
 
 
 @dataclass
@@ -112,6 +118,147 @@ class MemoryService:
         self.embedding_provider = embedding_provider
         self.privacy_policy = privacy_policy
         self.cipher = cipher
+
+    def _validate_write_payload(self, payload: dict[str, Any]) -> None:
+        content = payload.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise MemoryInputError(
+                code="INVALID_CONTENT",
+                message="content must be a non-empty string.",
+                missing_fields=["content"],
+                retryable=False,
+            )
+
+        agent_id = payload.get("agent_id")
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            raise MemoryInputError(
+                code="INVALID_AGENT_ID",
+                message="agent_id must be a non-empty string.",
+                missing_fields=["agent_id"],
+                retryable=False,
+            )
+
+        for key in ("context",):
+            value = payload.get(key)
+            if value is not None and not isinstance(value, str):
+                raise MemoryInputError(
+                    code="INVALID_FIELD_TYPE",
+                    message=f"{key} must be a string when provided.",
+                    missing_fields=[key],
+                    retryable=False,
+                )
+
+    @staticmethod
+    def _decision_payload(decision: PersistenceDecision, *, write_path: str) -> dict[str, Any]:
+        return decision.as_payload(write_path=write_path)
+
+    def _audit_write_attempt(
+        self,
+        *,
+        actor: ActorContext,
+        write_path: str,
+        decision: PersistenceDecision,
+        scope: ScopeRef,
+        entry_id: Optional[str] = None,
+        outcome: str,
+        duplicate_of: Optional[str] = None,
+    ) -> None:
+        payload = self._decision_payload(decision, write_path=write_path)
+        payload.update(
+            {
+                "outcome": outcome,
+                "scope": scope.model_dump(),
+            }
+        )
+        if duplicate_of:
+            payload["duplicate_of"] = duplicate_of
+
+        self.store.add_audit(
+            AuditEvent(
+                entry_id=entry_id,
+                action="write_attempt",
+                actor=actor.agent_id,
+                reason=decision.decision,
+                payload=payload,
+            )
+        )
+
+    def _audit_novelty_failure(
+        self,
+        *,
+        actor: ActorContext,
+        write_path: str,
+        embedding_status: str,
+        vector_query_status: str,
+        error_type: str,
+        memory_id: Optional[str] = None,
+    ) -> None:
+        self.store.add_audit(
+            AuditEvent(
+                entry_id=memory_id,
+                action="novelty_computation_failed",
+                actor=actor.agent_id,
+                reason="degraded",
+                payload={
+                    "event": "novelty_computation_failed",
+                    "error_type": error_type,
+                    "embedding_status": embedding_status,
+                    "vector_query_status": vector_query_status,
+                    "write_path": write_path,
+                    "memory_id": memory_id,
+                },
+            )
+        )
+
+    def _persist_internal_entry(
+        self,
+        *,
+        actor: ActorContext,
+        write_path: str,
+        record_type: str,
+        internal_reason: str,
+        entry: MemoryEntry,
+    ) -> PersistenceDecision:
+        decision = classify_internal_write(
+            record_type=record_type,
+            content=entry.content,
+            internal_reason=internal_reason,
+            write_path=write_path,
+        )
+        if not decision.accepted:
+            self._audit_write_attempt(
+                actor=actor,
+                write_path=write_path,
+                decision=decision,
+                scope=entry.scope,
+                entry_id=entry.id,
+                outcome="rejected_internal",
+            )
+            raise ValueError(
+                f"Internal write rejected for {record_type}: {', '.join(decision.reason_codes)}"
+            )
+
+        metadata = dict(entry.metadata)
+        metadata.update(
+            {
+                "persistence_decision": self._decision_payload(decision, write_path=write_path),
+                "internal_reason": internal_reason,
+                "generated_by": actor.agent_id,
+            }
+        )
+        entry.metadata = metadata
+        entry.source = "internal_governance"
+
+        self.store.add_entry(entry)
+        self._audit_write_attempt(
+            actor=actor,
+            write_path=write_path,
+            decision=decision,
+            scope=entry.scope,
+            entry_id=entry.id,
+            outcome="accepted_internal",
+        )
+        return decision
 
     def _resolve_exchange_path(self, path: Path, *, must_exist: bool) -> Path:
         base_dir = self.config.import_export_base_dir.resolve()
@@ -278,11 +425,46 @@ class MemoryService:
                 ],
             )
 
-    async def add(self, payload: dict, actor: ActorContext) -> dict:
+    async def add(self, payload: dict, actor: ActorContext, *, write_path: str = "add") -> dict:
         scope = self._scope_from_payload(payload, actor)
+        try:
+            self._validate_write_payload(payload)
+        except MemoryInputError as exc:
+            invalid_decision = PersistenceDecision(
+                accepted=False,
+                category="noise",
+                reason_codes=[exc.code],
+                confidence=1.0,
+                normalized_summary=str(payload.get("content", "")).strip()[:180],
+            )
+            self._audit_write_attempt(
+                actor=actor,
+                write_path=write_path,
+                decision=invalid_decision,
+                scope=scope,
+                outcome="invalid",
+            )
+            raise
+
         visibility = MemoryScope(payload.get("visibility", payload.get("scope_visibility", "shared")))
         if not self._can_write(actor, visibility, scope):
             raise PermissionError("Write denied by scope policy")
+
+        decision = classify_persistence(payload, actor, write_path=write_path)
+        if not decision.accepted:
+            self._audit_write_attempt(
+                actor=actor,
+                write_path=write_path,
+                decision=decision,
+                scope=scope,
+                outcome="rejected",
+            )
+            return {
+                "success": False,
+                "rejected": True,
+                "reason": "policy-rejected",
+                "decision": self._decision_payload(decision, write_path=write_path),
+            }
 
         entry_type = EntryType(payload.get("type", "fact"))
         tier = Tier(payload.get("tier", "tier-1"))
@@ -295,29 +477,70 @@ class MemoryService:
         if self.config.dedup_hash_enabled:
             duplicated = self.store.find_by_hash(scope=scope, content_hash=content_hash)
             if duplicated is not None:
+                self._audit_write_attempt(
+                    actor=actor,
+                    write_path=write_path,
+                    decision=decision,
+                    scope=scope,
+                    entry_id=duplicated.id,
+                    outcome="duplicate",
+                    duplicate_of=duplicated.id,
+                )
                 return {
                     "success": True,
                     "entry_id": duplicated.id,
                     "duplicate_of": duplicated.id,
                     "reason": "hash-duplicate",
+                    "decision": self._decision_payload(decision, write_path=write_path),
                 }
 
         version = self._current_embedding_version()
-        query_vec = (await self.embedding_provider.embed([raw_content]))[0]
-        novelty_computed = True
+        query_vec: Optional[list[float]] = None
+        novelty_computed = False
+        novelty_status = "failed"
         top_similarities: list[float] = []
+        embedding_status = "not_started"
+        vector_query_status = "not_started"
 
         try:
-            novelty_candidates = self.vector_store.search(
-                query_vector=query_vec,
-                scope=scope,
-                version_id=version.version_id,
-                limit=5,
-                include_invalidated=False,
+            query_vec = (await self.embedding_provider.embed([raw_content]))[0]
+            if self._has_usable_embedding(query_vec):
+                embedding_status = "ok"
+                novelty_candidates = self.vector_store.search(
+                    query_vector=query_vec,
+                    scope=scope,
+                    version_id=version.version_id,
+                    limit=5,
+                    include_invalidated=False,
+                )
+                top_similarities = [similarity for _, similarity in novelty_candidates]
+                novelty_computed = True
+                novelty_status = "computed"
+                vector_query_status = "ok"
+            else:
+                embedding_status = "empty_vector"
+                vector_query_status = "skipped"
+                self._audit_novelty_failure(
+                    actor=actor,
+                    write_path=write_path,
+                    embedding_status=embedding_status,
+                    vector_query_status=vector_query_status,
+                    error_type="EmptyEmbeddingVector",
+                )
+                query_vec = None
+        except Exception as exc:
+            if embedding_status == "not_started":
+                embedding_status = "failed"
+                vector_query_status = "skipped"
+            else:
+                vector_query_status = "failed"
+            self._audit_novelty_failure(
+                actor=actor,
+                write_path=write_path,
+                embedding_status=embedding_status,
+                vector_query_status=vector_query_status,
+                error_type=type(exc).__name__,
             )
-            top_similarities = [similarity for _, similarity in novelty_candidates]
-        except Exception:
-            novelty_computed = False
             top_similarities = []
 
         now_iso = utc_now_iso()
@@ -327,11 +550,13 @@ class MemoryService:
             visibility=visibility,
             top_similarities=top_similarities,
             novelty_computed=novelty_computed,
+            novelty_status=novelty_status,
             event_ts_utc=now_iso,
             actor_agent_id=actor.agent_id,
             runtime_writer_model=actor.writer_model,
         )
         self._validate_self_eval_payload(payload, writer_model=str(metadata.get("writer_model", "")).strip())
+        metadata["persistence_decision"] = self._decision_payload(decision, write_path=write_path)
 
         privacy = self.privacy_policy.apply(
             content=raw_content,
@@ -346,19 +571,45 @@ class MemoryService:
             stored_content = cipher_result.payload
             encrypted = cipher_result.encrypted
 
-        if self.config.dedup_semantic_enabled:
-            semantic_matches = self.vector_store.similarity_search(
-                probe_vector=query_vec,
-                scope=scope,
-                version_id=version.version_id,
-                threshold=self.config.dedup_semantic_threshold,
-                limit=1,
-            )
+        if self.config.dedup_semantic_enabled and query_vec is not None:
+            try:
+                semantic_matches = self.vector_store.similarity_search(
+                    probe_vector=query_vec,
+                    scope=scope,
+                    version_id=version.version_id,
+                    threshold=self.config.dedup_semantic_threshold,
+                    limit=1,
+                )
+            except Exception as exc:
+                self.store.add_audit(
+                    AuditEvent(
+                        action="semantic_dedup_failed",
+                        actor=actor.agent_id,
+                        reason="degraded",
+                        payload={
+                            "error_type": type(exc).__name__,
+                            "write_path": write_path,
+                            "embedding_status": embedding_status,
+                            "vector_query_status": "semantic_dedup_failed",
+                        },
+                    )
+                )
+                semantic_matches = []
+
             if semantic_matches:
                 duplicate_entry, similarity = semantic_matches[0]
                 source_context_hash = str(metadata.get("context_hash", ""))
                 existing_context_hash = str(duplicate_entry.metadata.get("context_hash", ""))
                 same_context = bool(source_context_hash and source_context_hash == existing_context_hash)
+                self._audit_write_attempt(
+                    actor=actor,
+                    write_path=write_path,
+                    decision=decision,
+                    scope=scope,
+                    entry_id=duplicate_entry.id,
+                    outcome="duplicate",
+                    duplicate_of=duplicate_entry.id,
+                )
                 return {
                     "success": True,
                     "entry_id": duplicate_entry.id,
@@ -368,15 +619,24 @@ class MemoryService:
                     "merge_policy": "local-variant-no-consolidate"
                     if same_context
                     else "transferable-candidate-consolidation",
+                    "decision": self._decision_payload(decision, write_path=write_path),
                 }
 
+        now_value = utc_now_iso()
+        entry_kwargs: dict[str, Any] = {}
+        if write_path in {"import", "migration"} and payload.get("id"):
+            entry_kwargs["id"] = payload["id"]
+
         entry = MemoryEntry(
+            **entry_kwargs,
             tier=tier,
             scope=scope,
             visibility=visibility,
             source=payload.get("source", "mcp"),
             type=entry_type,
-            status=EntryStatus.ACTIVE,
+            status=EntryStatus(payload.get("status", EntryStatus.ACTIVE.value))
+            if write_path in {"import", "migration"} and payload.get("status")
+            else EntryStatus.ACTIVE,
             content=stored_content,
             context=payload.get("context", ""),
             tags=tags,
@@ -384,8 +644,12 @@ class MemoryService:
             metadata=privacy.metadata,
             links=links,
             confidence=float(payload.get("confidence", 0.5)),
-            created_at=now_iso,
-            updated_at=now_iso,
+            created_at=payload.get("created_at", now_value)
+            if write_path in {"import", "migration"}
+            else now_iso,
+            updated_at=payload.get("updated_at", now_value)
+            if write_path in {"import", "migration"}
+            else now_iso,
             content_hash=content_hash,
             embedding_version_id=version.version_id,
             encrypted=encrypted,
@@ -393,25 +657,21 @@ class MemoryService:
         )
 
         self.store.add_entry(entry)
-        self.vector_store.upsert(
-            entry_id=entry.id,
-            version_id=version.version_id,
-            vector=query_vec,
-            created_at=now_iso,
-        )
-
-        self.store.add_audit(
-            AuditEvent(
+        if query_vec is not None:
+            self.vector_store.upsert(
                 entry_id=entry.id,
-                action="add",
-                actor=actor.agent_id,
-                payload={
-                    "tier": entry.tier.value,
-                    "type": entry.type.value,
-                    "visibility": entry.visibility.value,
-                    "scope": entry.scope.model_dump(),
-                },
+                version_id=version.version_id,
+                vector=query_vec,
+                created_at=now_iso,
             )
+
+        self._audit_write_attempt(
+            actor=actor,
+            write_path=write_path,
+            decision=decision,
+            scope=entry.scope,
+            entry_id=entry.id,
+            outcome="accepted",
         )
 
         return {
@@ -428,6 +688,7 @@ class MemoryService:
             "importance_class": entry.metadata.get("importance_class"),
             "novelty_score": entry.metadata.get("novelty_score"),
             "novelty_computed": entry.metadata.get("novelty_computed"),
+            "decision": self._decision_payload(decision, write_path=write_path),
         }
 
     def get(self, entry_id: str, actor: ActorContext) -> Optional[MemoryEntry]:
@@ -572,7 +833,13 @@ class MemoryService:
                 created_at=now_iso,
                 updated_at=now_iso,
             )
-            self.store.add_entry(invalidation_entry)
+            internal_decision = self._persist_internal_entry(
+                actor=actor,
+                write_path="invalidate",
+                record_type="invalidation_entry",
+                internal_reason=reason,
+                entry=invalidation_entry,
+            )
 
             self.store.add_audit(
                 AuditEvent(
@@ -580,7 +847,13 @@ class MemoryService:
                     action="invalidate",
                     actor=actor.agent_id,
                     reason=reason,
-                    payload={"invalidation_entry_id": invalidation_entry.id},
+                    payload={
+                        "invalidation_entry_id": invalidation_entry.id,
+                        "internal_write": self._decision_payload(
+                            internal_decision,
+                            write_path="invalidate",
+                        ),
+                    },
                 )
             )
 
@@ -653,8 +926,30 @@ class MemoryService:
                 created_at=now_iso,
                 updated_at=now_iso,
             )
-            self.store.add_entry(merged_entry)
+            merge_reason = reason or "promotion-merge"
+            internal_decision = self._persist_internal_entry(
+                actor=actor,
+                write_path="promote_merge",
+                record_type="merge_summary",
+                internal_reason=merge_reason,
+                entry=merged_entry,
+            )
             merged_entry_id = merged_entry.id
+            self.store.add_audit(
+                AuditEvent(
+                    entry_id=merged_entry.id,
+                    action="promote_merge",
+                    actor=actor.agent_id,
+                    reason=merge_reason,
+                    payload={
+                        "promoted_entry_ids": promoted,
+                        "internal_write": self._decision_payload(
+                            internal_decision,
+                            write_path="promote_merge",
+                        ),
+                    },
+                )
+            )
 
         return {
             "success": True,
@@ -808,6 +1103,7 @@ class MemoryService:
         resolved_path = self._resolve_exchange_path(path, must_exist=True)
         imported = 0
         duplicates = 0
+        rejected = 0
 
         scope = target_scope or ScopeRef(
             workspace_id=actor.workspace_id,
@@ -837,28 +1133,46 @@ class MemoryService:
                 entry.scope.workspace_id = scope.workspace_id
                 entry.scope.project_id = scope.project_id
 
-            if self.store.find_by_hash(scope=entry.scope, content_hash=entry.content_hash):
-                duplicates += 1
-                continue
-
-            self.store.add_entry(entry)
-            imported += 1
-
-            active = self.store.get_active_embedding_version() or self._current_embedding_version()
-            content = entry.content
+            import_payload = entry.model_dump(mode="json")
             if entry.encrypted:
                 try:
-                    content = self.cipher.decrypt(entry.content)
+                    import_payload["content"] = self.cipher.decrypt(entry.content)
                 except Exception:
-                    content = ""
-            vectors = await self.embedding_provider.embed([content])
-            if vectors and vectors[0]:
-                self.vector_store.upsert(
-                    entry_id=entry.id,
-                    version_id=active.version_id,
-                    vector=vectors[0],
-                    created_at=utc_now_iso(),
-                )
+                    rejected += 1
+                    self.store.add_audit(
+                        AuditEvent(
+                            entry_id=entry.id,
+                            action="write_attempt",
+                            actor=actor.agent_id,
+                            reason="rejected",
+                            payload={
+                                "decision": "rejected",
+                                "accepted": False,
+                                "category": "noise",
+                                "reason_codes": ["IMPORT_DECRYPT_FAILED"],
+                                "confidence": 1.0,
+                                "policy_version": POLICY_VERSION,
+                                "normalized_summary": "",
+                                "write_path": "import",
+                                "outcome": "invalid",
+                                "scope": entry.scope.model_dump(),
+                            },
+                        )
+                    )
+                    continue
+            import_payload["agent_id"] = actor.agent_id
+            try:
+                result = await self.add(import_payload, actor, write_path="import")
+            except MemoryInputError:
+                rejected += 1
+                continue
+            if result.get("duplicate_of"):
+                duplicates += 1
+                continue
+            if not result.get("success"):
+                rejected += 1
+                continue
+            imported += 1
 
         self.store.add_audit(
             AuditEvent(
@@ -869,6 +1183,7 @@ class MemoryService:
                     "format": fmt,
                     "imported": imported,
                     "duplicates": duplicates,
+                    "rejected": rejected,
                 },
             )
         )
@@ -878,4 +1193,5 @@ class MemoryService:
             format=fmt,
             imported=imported,
             duplicates=duplicates,
+            rejected=rejected,
         )

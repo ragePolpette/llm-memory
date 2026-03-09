@@ -6,7 +6,7 @@ import hashlib
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -169,78 +169,4 @@ class ImportResult(BaseModel):
     format: str
     imported: int
     duplicates: int
-
-
-# -------------------------
-# Compatibilità API legacy
-# -------------------------
-class Memory(BaseModel):
-    """Rappresenta una singola memoria nel sistema (v1 legacy)."""
-
-    id: UUID = Field(default_factory=uuid4)
-    content: str
-    context: str
-    agent_id: str
-    session_id: Optional[str] = None
-    scope: MemoryScope = MemoryScope.SHARED
-    tags: list[str] = Field(default_factory=list)
-    metadata: dict = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=utc_now)
-    content_hash: str = ""
-
-    def model_post_init(self, __context) -> None:
-        if not self.content_hash:
-            self.content_hash = compute_content_hash(self.content)
-
-    @field_validator("tags", mode="before")
-    @classmethod
-    def ensure_list(cls, value):
-        if value is None:
-            return []
-        return value
-
-
-class MemoryWriteResult(BaseModel):
-    """Risultato di una operazione di scrittura."""
-
-    success: bool
-    memory_id: UUID | str
-    indexed: bool
-    mode: str
-    duplicate_of: Optional[UUID | str] = None
-    message: Optional[str] = None
-
-
-class SearchResult(BaseModel):
-    """Risultato compatibile con la ricerca legacy."""
-
-    memory_id: UUID | str
-    content: str
-    context: str
-    agent_id: str
-    scope: MemoryScope
-    score: float
-    tags: list[str] = Field(default_factory=list)
-    created_at: datetime
-    indexed: bool = True
-
-
-class IndexResult(BaseModel):
-    """Risultato di una operazione di indicizzazione."""
-
-    indexed: bool
-    mode: str
-    queued: bool = False
-    error: Optional[str] = None
-
-
-class MemorySummary(BaseModel):
-    """Sommario di una memoria per listing."""
-
-    memory_id: UUID | str
-    context: str
-    agent_id: str
-    scope: MemoryScope
-    tags: list[str]
-    created_at: datetime
-    content_preview: str
+    rejected: int = 0

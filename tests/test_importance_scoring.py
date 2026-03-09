@@ -94,6 +94,33 @@ def test_confidence_path_scoring_with_negative_impact():
     assert meta["inference_score"] == 1.0
 
 
+def test_failed_novelty_is_unknown_and_not_maximum():
+    scope = ScopeRef(workspace_id="ws", project_id="prj")
+    payload = {
+        "writer_model": "gpt-5",
+        "importance": {
+            "confidence": 0.2,
+            "tool_steps": 2,
+            "inference_level": 2,
+        },
+    }
+
+    meta = build_importance_metadata(
+        payload=payload,
+        scope=scope,
+        visibility=MemoryScope.SHARED,
+        top_similarities=[],
+        novelty_computed=False,
+        novelty_status="failed",
+        event_ts_utc="2026-03-05T12:00:00+00:00",
+        actor_agent_id="agent-score",
+    )
+
+    assert meta["novelty_status"] == "failed"
+    assert meta["novelty_score"] is None
+    assert meta["importance_score"] < 100
+
+
 @pytest.mark.asyncio
 async def test_service_add_enforcement_rejects_missing_fields(service):
     actor = ActorContext(agent_id="agent-enf", user_id="user-enf", workspace_id="ws-test", project_id="prj-test")
@@ -102,7 +129,7 @@ async def test_service_add_enforcement_rejects_missing_fields(service):
     with pytest.raises(MemoryInputError) as exc:
         await service.add(
             {
-                "content": "Memoria incompleta da rifiutare",
+                "content": "Il progetto usa SQLite locale come backend predefinito dei metadata.",
                 "context": "invalid",
                 "agent_id": actor.agent_id,
                 "tier": "tier-1",
@@ -122,7 +149,7 @@ async def test_service_add_persists_self_eval_metadata(service):
 
     result = await service.add(
         {
-            "content": "Evento critico osservato in pipeline.",
+            "content": "Il sistema registra un evento critico osservato nella pipeline di persistenza.",
             "context": "ops",
             "agent_id": actor.agent_id,
             "tier": "tier-2",
@@ -170,7 +197,7 @@ async def test_service_add_sets_novelty_computed_false_on_similarity_failure(ser
 
     result = await service.add(
         {
-            "content": "Memoria con fallback novelty",
+            "content": "Il progetto usa un fallback novelty quando la similarity search non e disponibile.",
             "context": "fallback",
             "agent_id": actor.agent_id,
             "tier": "tier-1",
@@ -195,7 +222,11 @@ async def test_service_add_sets_novelty_computed_false_on_similarity_failure(ser
     entry = service.get(result["entry_id"], actor)
     assert entry is not None
     assert entry.metadata["novelty_computed"] is False
-    assert entry.metadata["novelty_score"] == 1.0
+    assert entry.metadata["novelty_status"] == "failed"
+    assert entry.metadata["novelty_score"] is None
+
+    audits = service.store.list_audit(limit=20)
+    assert any(audit.action == "novelty_computation_failed" for audit in audits)
 
 
 @pytest.mark.asyncio
@@ -209,7 +240,7 @@ async def test_call_tool_returns_json_error_payload_for_input_validation(runtime
         params={
             "name": "memory.add",
             "arguments": {
-                "content": "memoria incompleta",
+                "content": "Il progetto usa SQLite locale come backend predefinito dei metadata.",
                 "agent_id": "agent-call-tool",
                 "visibility": "shared",
             },

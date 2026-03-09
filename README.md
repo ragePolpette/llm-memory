@@ -9,34 +9,28 @@ Questo MCP e' dedicato a memorie operative persistenti (non al retrieval di cont
 ## Obiettivi implementati
 
 - Tiering: `tier-1` (sessione), `tier-2` (progetto), `tier-3` (long-term curato)
-- Storage locale modulare: default `SQLite` (metadata + embeddings), backend vettoriale swappabile
+- Storage locale `SQLite` per metadata e embeddings
 - Embedding provider swappabile con versioning e `reembed` incrementale/resumable
 - Sicurezza/privacy local-first: blocco rete outbound, privacy policy, cifratura opzionale payload sensibili
 - Governance: dedup hash+semantico, promotion, invalidation con trail audit
-- API MCP versionata: nuovi tool `memory.*` + wrapper legacy (`memory_write/search/read/list`)
+- API MCP v2 unificata: `memory.*` con governance centralizzata della persistenza
 - Import/export deterministico `memory.md` + JSONL + dump SQLite locale
 
 ## Architettura
 
 ```text
-MCP Tools (v2 + v1 compat)
-    |
-    v
-MemoryService (governance/orchestrazione)
-    |-- PrivacyPolicy / Cipher / NetworkGuard
-    |-- Dedup + Promotion + Invalidation + Audit
-    |-- Retrieval Ranking (similarity+recency+tier+status)
-    |
-    +--> Metadata Store interface
-    |        +--> SQLiteMemoryStore (default)
-    |
-    +--> Vector Store interface
-    |        +--> SQLiteVectorStore (default)
-    |        +--> LanceVectorStore (legacy/optional, equality-only filters hardened)
-    |
-    +--> EmbeddingProvider interface
-             +--> hash-local (default offline hard-safe)
-             +--> sentence-transformers (local_files_only)
+MCP Tool
+   |
+   v
+MemoryService
+   |
+   +--> PersistencePolicy (deny-by-default)
+   +--> ImportanceScoring / PrivacyPolicy / Cipher / NetworkGuard
+   +--> Audit trail write_attempt
+   |
+   +--> SQLiteMemoryStore
+   +--> SQLiteVectorStore
+   +--> EmbeddingProvider
 ```
 
 ## Schema memoria canonico (`memory.md`)
@@ -109,6 +103,21 @@ in fase di avvio server. Default `false` (modalita sperimentale non-hardened).
 `memory.export`. I path richiesti dai tool devono risolversi all'interno di questa base
 directory; path esterni vengono rifiutati.
 
+## Runtime Architecture
+
+Il runtime attivo e' solo v2:
+
+- `src/mcp_server/tools.py`
+- `src/service/memory_service.py`
+- `src/service/persistence_policy.py`
+- `src/service/importance_scoring.py`
+- `src/security/privacy.py`
+- `src/storage/sqlite_store.py`
+- `src/vectordb/sqlite_vector_store.py`
+- `src/interop/memory_markdown.py` solo per import/export
+
+Non esiste piu un path runtime alternativo basato su Markdown/LanceDB.
+
 ## Tool MCP (v2)
 
 - `memory.add`
@@ -148,13 +157,6 @@ Lo script applica:
 - bucket sampling `60/25/15` (top/mid/low)
 - quota minima esterna (`is_external`) configurabile
 
-Compatibilità legacy:
-
-- `memory_write` -> wrapper su `memory.add`
-- `memory_search` -> wrapper su `memory.search`
-- `memory_read` -> wrapper su `memory.get`
-- `memory_list` -> wrapper su list v2
-
 ## Reindex / Reembed
 
 Eseguire via tool MCP `memory.reembed` (incrementale):
@@ -186,7 +188,7 @@ Nota: la cifratura usa `cryptography` (`Fernet`) se disponibile localmente. Le p
 Script:
 
 ```bash
-python scripts/migrate_v1_to_v2.py --source-dir ./memories --workspace default --project default
+python scripts/legacy/migrate_v1_to_v2.py --source-dir ./memories --workspace default --project default
 ```
 
 ### Rollback
@@ -204,4 +206,4 @@ Scelta pragmatica per local-only:
 - backup semplice (singolo file)
 - facile migrazione futura (interfacce storage/vector separate)
 
-Per workload maggiori si puo sostituire il backend vettoriale senza cambiare il service layer.
+Il runtime supportato usa SQLite come unico backend di persistenza.
