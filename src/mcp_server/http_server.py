@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
+from typing import Any, TypedDict
 
 import uvicorn
 from mcp.server import Server
@@ -27,6 +29,182 @@ mcp_server: Server | None = None
 sse_transport: SseServerTransport | None = None
 streamable_session_manager: StreamableHTTPSessionManager | None = None
 app_config = None
+
+
+class ValidationError(TypedDict):
+    field: str
+    error: str
+    expected: str
+
+
+# Strict top-level JSON-RPC schema expected by the MCP HTTP endpoint.
+REQUEST_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["jsonrpc", "method"],
+    "properties": {
+        # JSON-RPC protocol version discriminator. MCP requests must use 2.0.
+        "jsonrpc": {
+            "type": "string",
+            "enum": ["2.0"],
+            "description": "JSON-RPC protocol version. Must be '2.0'.",
+        },
+        # Request id used for request/response correlation. Optional for notifications.
+        "id": {
+            "type": ["string", "integer", "null"],
+            "description": "Optional request identifier for JSON-RPC correlation.",
+        },
+        # MCP method name, for example initialize, tools/list, tools/call.
+        "method": {
+            "type": "string",
+            "description": "JSON-RPC method name to execute.",
+        },
+        # Structured arguments passed to the MCP method implementation.
+        "params": {
+            "type": "object",
+            "description": "Optional method parameters object.",
+        },
+    },
+}
+
+
+def _expected_label(definition: dict[str, Any]) -> str:
+    if "enum" in definition:
+        return " | ".join(str(item) for item in definition["enum"])
+
+    expected_type = definition.get("type")
+    if isinstance(expected_type, list):
+        return " | ".join(str(item) for item in expected_type)
+    if expected_type is None:
+        return "any"
+    return str(expected_type)
+
+
+def _matches_type(value: Any, expected_type: str) -> bool:
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "null":
+        return value is None
+    return False
+
+
+def validateRequest(payload: Any) -> dict[str, Any]:
+    errors: list[ValidationError] = []
+
+    if not isinstance(payload, dict):
+        return {
+            "valid": False,
+            "errors": [
+                {
+                    "field": "$",
+                    "error": "must be a JSON object",
+                    "expected": REQUEST_SCHEMA["type"],
+                }
+            ],
+        }
+
+    properties = REQUEST_SCHEMA["properties"]
+    required_fields = REQUEST_SCHEMA["required"]
+
+    for field_name in required_fields:
+        if field_name not in payload:
+            field_schema = properties[field_name]
+            errors.append(
+                {
+                    "field": field_name,
+                    "error": "is required",
+                    "expected": _expected_label(field_schema),
+                }
+            )
+
+    for field_name in payload.keys():
+        if field_name not in properties:
+            errors.append(
+                {
+                    "field": field_name,
+                    "error": "unexpected field",
+                    "expected": "no additional fields",
+                }
+            )
+
+    for field_name, field_schema in properties.items():
+        if field_name not in payload:
+            continue
+
+        value = payload[field_name]
+        expected_type = field_schema.get("type")
+        type_candidates = expected_type if isinstance(expected_type, list) else [expected_type]
+
+        if expected_type is not None and not any(_matches_type(value, str(candidate)) for candidate in type_candidates):
+            errors.append(
+                {
+                    "field": field_name,
+                    "error": f"type mismatch: got {type(value).__name__}",
+                    "expected": _expected_label(field_schema),
+                }
+            )
+            continue
+
+        if "enum" in field_schema and value not in field_schema["enum"]:
+            errors.append(
+                {
+                    "field": field_name,
+                    "error": f"invalid enum value: {value!r}",
+                    "expected": _expected_label(field_schema),
+                }
+            )
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+    }
+
+
+def _validation_error_response(errors: list[ValidationError]) -> JSONResponse:
+    return JSONResponse(
+        {
+            "success": False,
+            "error": {
+                "type": "validation_error",
+                "message": "Request validation failed",
+                "details": errors,
+            },
+        },
+        status_code=400,
+    )
+
+
+async def _read_request_body(receive: Receive) -> tuple[bytes, list[dict[str, Any]]]:
+    messages: list[dict[str, Any]] = []
+    body_chunks: list[bytes] = []
+
+    while True:
+        message = await receive()
+        messages.append(message)
+
+        if message.get("type") != "http.request":
+            break
+
+        body_chunks.append(message.get("body", b""))
+        if not message.get("more_body", False):
+            break
+
+    return b"".join(body_chunks), messages
+
+
+def _replay_receive(messages: list[dict[str, Any]]) -> Receive:
+    queue = list(messages)
+
+    async def _receive() -> dict[str, Any]:
+        if queue:
+            return queue.pop(0)
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return _receive
 
 
 def init_components() -> None:
@@ -90,6 +268,32 @@ class StreamableHTTPASGIApp:
             )
             await response(scope, receive, send)
             return
+
+        if scope.get("type") == "http" and scope.get("path") == "/mcp" and scope.get("method") == "POST":
+            body_bytes, messages = await _read_request_body(receive)
+            if not body_bytes:
+                response = _validation_error_response(
+                    [{"field": "$", "error": "request body is required", "expected": "JSON object"}]
+                )
+                await response(scope, receive, send)
+                return
+
+            try:
+                payload = json.loads(body_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                response = _validation_error_response(
+                    [{"field": "$", "error": "invalid JSON payload", "expected": "JSON object"}]
+                )
+                await response(scope, receive, send)
+                return
+
+            validation = validateRequest(payload)
+            if not validation["valid"]:
+                response = _validation_error_response(validation["errors"])
+                await response(scope, receive, send)
+                return
+
+            receive = _replay_receive(messages)
 
         if streamable_session_manager is None:
             response = Response("Server not initialized", status_code=503)
