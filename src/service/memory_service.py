@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -147,6 +148,22 @@ class MemoryService:
                     missing_fields=[key],
                     retryable=False,
                 )
+
+    @staticmethod
+    def _preview_text(value: Any, *, limit: int = 240) -> Any:
+        if isinstance(value, str):
+            compact = " ".join(value.split())
+            return compact[:limit]
+        return value
+
+    def _log_activity(self, event: str, payload: dict[str, Any]) -> None:
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "server": "llm-memory",
+            "event": event,
+            **payload,
+        }
+        sys.stderr.write(f"[MCP_ACTIVITY] {json.dumps(record, ensure_ascii=True, default=str)}\n")
 
     @staticmethod
     def _decision_payload(decision: PersistenceDecision, *, write_path: str) -> dict[str, Any]:
@@ -427,6 +444,19 @@ class MemoryService:
 
     async def add(self, payload: dict, actor: ActorContext, *, write_path: str = "add") -> dict:
         scope = self._scope_from_payload(payload, actor)
+        self._log_activity(
+            "write_in",
+            {
+                "operation": write_path,
+                "agent_id": actor.agent_id,
+                "workspace_id": scope.workspace_id,
+                "project_id": scope.project_id,
+                "content": self._preview_text(payload.get("content")),
+                "type": payload.get("type", "fact"),
+                "tier": payload.get("tier", "tier-1"),
+                "visibility": payload.get("visibility", payload.get("scope_visibility", "shared")),
+            },
+        )
         try:
             self._validate_write_payload(payload)
         except MemoryInputError as exc:
@@ -459,12 +489,23 @@ class MemoryService:
                 scope=scope,
                 outcome="rejected",
             )
-            return {
+            result = {
                 "success": False,
                 "rejected": True,
                 "reason": "policy-rejected",
                 "decision": self._decision_payload(decision, write_path=write_path),
             }
+            self._log_activity(
+                "write_out",
+                {
+                    "operation": write_path,
+                    "agent_id": actor.agent_id,
+                    "success": result["success"],
+                    "rejected": result["rejected"],
+                    "reason": result["reason"],
+                },
+            )
+            return result
 
         entry_type = EntryType(payload.get("type", "fact"))
         tier = Tier(payload.get("tier", "tier-1"))
@@ -486,13 +527,25 @@ class MemoryService:
                     outcome="duplicate",
                     duplicate_of=duplicated.id,
                 )
-                return {
+                result = {
                     "success": True,
                     "entry_id": duplicated.id,
                     "duplicate_of": duplicated.id,
                     "reason": "hash-duplicate",
                     "decision": self._decision_payload(decision, write_path=write_path),
                 }
+                self._log_activity(
+                    "write_out",
+                    {
+                        "operation": write_path,
+                        "agent_id": actor.agent_id,
+                        "success": result["success"],
+                        "entry_id": result["entry_id"],
+                        "duplicate_of": result["duplicate_of"],
+                        "reason": result["reason"],
+                    },
+                )
+                return result
 
         version = self._current_embedding_version()
         query_vec: Optional[list[float]] = None
@@ -610,7 +663,7 @@ class MemoryService:
                     outcome="duplicate",
                     duplicate_of=duplicate_entry.id,
                 )
-                return {
+                result = {
                     "success": True,
                     "entry_id": duplicate_entry.id,
                     "duplicate_of": duplicate_entry.id,
@@ -621,6 +674,19 @@ class MemoryService:
                     else "transferable-candidate-consolidation",
                     "decision": self._decision_payload(decision, write_path=write_path),
                 }
+                self._log_activity(
+                    "write_out",
+                    {
+                        "operation": write_path,
+                        "agent_id": actor.agent_id,
+                        "success": result["success"],
+                        "entry_id": result["entry_id"],
+                        "duplicate_of": result["duplicate_of"],
+                        "reason": result["reason"],
+                        "similarity": similarity,
+                    },
+                )
+                return result
 
         now_value = utc_now_iso()
         entry_kwargs: dict[str, Any] = {}
@@ -674,7 +740,7 @@ class MemoryService:
             outcome="accepted",
         )
 
-        return {
+        result = {
             "success": True,
             "entry_id": entry.id,
             "tier": entry.tier.value,
@@ -690,6 +756,20 @@ class MemoryService:
             "novelty_computed": entry.metadata.get("novelty_computed"),
             "decision": self._decision_payload(decision, write_path=write_path),
         }
+        self._log_activity(
+            "write_out",
+            {
+                "operation": write_path,
+                "agent_id": actor.agent_id,
+                "success": result["success"],
+                "entry_id": result["entry_id"],
+                "tier": result["tier"],
+                "type": result["type"],
+                "redacted": result["redacted"],
+                "encrypted": result["encrypted"],
+            },
+        )
+        return result
 
     def get(self, entry_id: str, actor: ActorContext) -> Optional[MemoryEntry]:
         entry = self.store.get_entry(entry_id)
@@ -724,6 +804,19 @@ class MemoryService:
         include_invalidated: bool = False,
         tier: Optional[str] = None,
     ) -> list[MemoryBundle]:
+        self._log_activity(
+            "query_in",
+            {
+                "operation": "search",
+                "agent_id": actor.agent_id,
+                "workspace_id": actor.workspace_id,
+                "project_id": actor.project_id,
+                "query": self._preview_text(query),
+                "limit": limit,
+                "include_invalidated": include_invalidated,
+                "tier": tier,
+            },
+        )
         scope = ScopeRef(workspace_id=actor.workspace_id, project_id=actor.project_id)
         version = self.store.get_active_embedding_version() or self._current_embedding_version()
         query_vector = (await self.embedding_provider.embed([query]))[0]
@@ -768,7 +861,17 @@ class MemoryService:
             )
 
         bundles.sort(key=lambda b: b.score, reverse=True)
-        return bundles[:limit]
+        result = bundles[:limit]
+        self._log_activity(
+            "query_out",
+            {
+                "operation": "search",
+                "agent_id": actor.agent_id,
+                "result_count": len(result),
+                "has_results": bool(result),
+            },
+        )
+        return result
 
     def _rank(self, entry: MemoryEntry, similarity: float) -> float:
         now = datetime.now(timezone.utc)
@@ -804,6 +907,16 @@ class MemoryService:
         reason: str,
         source: str = "mcp",
     ) -> dict:
+        self._log_activity(
+            "write_in",
+            {
+                "operation": "invalidate",
+                "agent_id": actor.agent_id,
+                "target_ids": target_ids,
+                "reason": self._preview_text(reason),
+                "source": source,
+            },
+        )
         invalidated: list[str] = []
         now_iso = utc_now_iso()
 
@@ -857,12 +970,23 @@ class MemoryService:
                 )
             )
 
-        return {
+        result = {
             "success": True,
             "invalidated": invalidated,
             "count": len(invalidated),
             "reason": reason,
         }
+        self._log_activity(
+            "write_out",
+            {
+                "operation": "invalidate",
+                "agent_id": actor.agent_id,
+                "success": result["success"],
+                "count": result["count"],
+                "has_results": bool(invalidated),
+            },
+        )
+        return result
 
     def promote(
         self,
@@ -873,6 +997,18 @@ class MemoryService:
         merge: bool = False,
         summary: Optional[str] = None,
     ) -> dict:
+        self._log_activity(
+            "write_in",
+            {
+                "operation": "promote",
+                "agent_id": actor.agent_id,
+                "entry_ids": entry_ids,
+                "target_tier": target_tier.value,
+                "reason": self._preview_text(reason),
+                "merge": merge,
+                "summary": self._preview_text(summary),
+            },
+        )
         promoted: list[str] = []
         now_iso = utc_now_iso()
 
@@ -904,13 +1040,24 @@ class MemoryService:
         if merge and promoted and summary:
             base_entry = self.store.get_entry(promoted[0])
             if base_entry is None:
-                return {
+                result = {
                     "success": True,
                     "promoted": promoted,
                     "count": len(promoted),
                     "target_tier": target_tier.value,
                     "merged_entry_id": None,
                 }
+                self._log_activity(
+                    "write_out",
+                    {
+                        "operation": "promote",
+                        "agent_id": actor.agent_id,
+                        "success": result["success"],
+                        "count": result["count"],
+                        "merged_entry_id": result["merged_entry_id"],
+                    },
+                )
+                return result
             base_scope = base_entry.scope
             merged_entry = MemoryEntry(
                 tier=target_tier,
@@ -951,13 +1098,24 @@ class MemoryService:
                 )
             )
 
-        return {
+        result = {
             "success": True,
             "promoted": promoted,
             "count": len(promoted),
             "target_tier": target_tier.value,
             "merged_entry_id": merged_entry_id,
         }
+        self._log_activity(
+            "write_out",
+            {
+                "operation": "promote",
+                "agent_id": actor.agent_id,
+                "success": result["success"],
+                "count": result["count"],
+                "merged_entry_id": result["merged_entry_id"],
+            },
+        )
+        return result
 
     async def reembed(
         self,
