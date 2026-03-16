@@ -18,7 +18,7 @@ class VectorStore(ABC):
     def search(
         self,
         query_vector: list[float],
-        scope: ScopeRef,
+        scopes: list[ScopeRef],
         version_id: str,
         limit: int = 10,
         include_invalidated: bool = False,
@@ -29,7 +29,7 @@ class VectorStore(ABC):
     def similarity_search(
         self,
         probe_vector: list[float],
-        scope: ScopeRef,
+        scopes: list[ScopeRef],
         version_id: str,
         threshold: float,
         limit: int = 5,

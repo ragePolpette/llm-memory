@@ -14,6 +14,8 @@ Questo MCP e' dedicato a memorie operative persistenti (non al retrieval di cont
 - Sicurezza/privacy local-first: blocco rete outbound, privacy policy, cifratura opzionale payload sensibili
 - Governance: dedup hash+semantico, promotion, invalidation con trail audit
 - API MCP v2 unificata: `memory.*` con governance centralizzata della persistenza
+- Discovery progetti e multi-project mode esplicito
+- Gerarchia scope: `project` -> `workspace` -> `global`
 - Import/export deterministico `memory.md` + JSONL + dump SQLite locale
 
 ## Architettura
@@ -78,6 +80,7 @@ MEMORY_PRIVACY_DROP_METADATA_KEYS=password,token,secret,api_key
 MEMORY_PRIVACY_ENCRYPT_SENSITIVE=false
 
 # Scope defaults
+MEMORY_MULTI_PROJECT_ENABLED=false
 MEMORY_WORKSPACE_ID=default
 MEMORY_PROJECT_ID=default
 
@@ -95,6 +98,12 @@ DEDUP_SEMANTIC_THRESHOLD=0.97
 PROMOTION_TARGET_TIER=tier-3
 MEMORY_SELF_EVAL_ENFORCED=false
 ```
+
+`MEMORY_MULTI_PROJECT_ENABLED=true` abilita il comportamento esplicito multi-project:
+
+- i progetti diventano entita registrate e interrogabili
+- i write/read project-scoped devono dichiarare esplicitamente `scope.project_id`
+- gli scope `workspace` e `global` restano disponibili senza fallback impliciti pericolosi
 
 `MEMORY_SELF_EVAL_ENFORCED` abilita/disabilita l'enforcement della regola di autovalutazione
 in fase di avvio server. Default `false` (modalita sperimentale non-hardened).
@@ -120,6 +129,16 @@ Non esiste piu un path runtime alternativo basato su Markdown/LanceDB.
 
 ## Tool MCP (v2)
 
+Discovery e amministrazione:
+
+- `memory.about`
+- `memory.list_projects`
+- `memory.get_project_info`
+- `memory.create_project`
+- `memory.scope_overview`
+
+Memoria operativa:
+
 - `memory.add`
 - `memory.search`
 - `memory.get`
@@ -128,6 +147,45 @@ Non esiste piu un path runtime alternativo basato su Markdown/LanceDB.
 - `memory.reembed`
 - `memory.export`
 - `memory.import`
+
+## Multi-project e gerarchia scope
+
+Il runtime ora distingue tre bucket logici:
+
+- `project`
+  - memoria specifica del progetto corrente
+  - priorita di retrieval piu alta
+  - in multi-project mode richiede `scope.project_id` esplicito
+- `workspace`
+  - convenzioni o memorie condivise nello stesso workspace
+  - recuperata dopo lo scope `project`
+- `global`
+  - preferenze e regole non legate a un singolo progetto
+  - recuperata per ultima
+
+La ricerca puo comporre gli scope in modo esplicito con:
+
+- `include_project`
+- `include_workspace`
+- `include_global`
+
+Il comportamento consigliato e:
+
+- `project` sempre attivo
+- `workspace` attivo quando vuoi convenzioni comuni allo stesso workspace
+- `global` attivo solo per memorie trasversali davvero riusabili
+
+## Discovery e creazione progetti
+
+I progetti non dovrebbero piu comparire "per caso" solo perche qualcuno ha scritto una memoria.
+
+Flusso previsto:
+
+1. `memory.list_projects` per discovery
+2. `memory.get_project_info` per metadata e verifica esistenza
+3. `memory.create_project` per creare esplicitamente un nuovo progetto
+
+In multi-project mode i write project-scoped sono pensati per lavorare solo su progetti registrati.
 
 ## Autovalutazione memorie (experimental)
 
@@ -207,3 +265,45 @@ Scelta pragmatica per local-only:
 - facile migrazione futura (interfacce storage/vector separate)
 
 Il runtime supportato usa SQLite come unico backend di persistenza.
+
+## Esempi rapidi MCP
+
+Creazione progetto:
+
+```json
+{
+  "project_id": "crm-api",
+  "display_name": "CRM API",
+  "agent_id": "codex"
+}
+```
+
+Write project-scoped:
+
+```json
+{
+  "content": "La convenzione del progetto usa migration incrementali.",
+  "agent_id": "codex",
+  "scope": {
+    "workspace_id": "default",
+    "project_id": "crm-api",
+    "scope_level": "project"
+  }
+}
+```
+
+Search con composizione scope:
+
+```json
+{
+  "query": "migration incrementali",
+  "agent_id": "codex",
+  "scope": {
+    "workspace_id": "default",
+    "project_id": "crm-api"
+  },
+  "include_project": true,
+  "include_workspace": true,
+  "include_global": false
+}
+```

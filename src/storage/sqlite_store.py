@@ -50,6 +50,7 @@ class SQLiteMemoryStore:
                     tier TEXT NOT NULL,
                     workspace_id TEXT NOT NULL,
                     project_id TEXT NOT NULL,
+                    scope_level TEXT NOT NULL DEFAULT 'project',
                     user_id TEXT,
                     agent_id TEXT,
                     visibility TEXT NOT NULL,
@@ -71,7 +72,7 @@ class SQLiteMemoryStore:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_entries_scope
-                    ON entries(workspace_id, project_id, status, tier, updated_at);
+                    ON entries(workspace_id, project_id, scope_level, status, tier, updated_at);
 
                 CREATE INDEX IF NOT EXISTS idx_entries_hash_scope
                     ON entries(workspace_id, project_id, content_hash);
@@ -205,17 +206,18 @@ class SQLiteMemoryStore:
             conn.execute(
                 """
                 INSERT INTO entries (
-                    id, tier, workspace_id, project_id, user_id, agent_id, visibility, source,
+                    id, tier, workspace_id, project_id, scope_level, user_id, agent_id, visibility, source,
                     type, status, content, context, tags_json, sensitivity_tags_json,
                     metadata_json, confidence, content_hash, created_at, updated_at,
                     embedding_version_id, encrypted, redacted
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry.id,
                     entry.tier.value,
                     entry.scope.workspace_id,
                     entry.scope.project_id,
+                    entry.scope.scope_level.value,
                     entry.scope.user_id,
                     entry.scope.agent_id,
                     entry.visibility.value,
@@ -243,7 +245,7 @@ class SQLiteMemoryStore:
             conn.execute(
                 """
                 UPDATE entries
-                SET tier=?, workspace_id=?, project_id=?, user_id=?, agent_id=?, visibility=?,
+                SET tier=?, workspace_id=?, project_id=?, scope_level=?, user_id=?, agent_id=?, visibility=?,
                     source=?, type=?, status=?, content=?, context=?, tags_json=?,
                     sensitivity_tags_json=?, metadata_json=?, confidence=?, content_hash=?,
                     updated_at=?, embedding_version_id=?, encrypted=?, redacted=?
@@ -253,6 +255,7 @@ class SQLiteMemoryStore:
                     entry.tier.value,
                     entry.scope.workspace_id,
                     entry.scope.project_id,
+                    entry.scope.scope_level.value,
                     entry.scope.user_id,
                     entry.scope.agent_id,
                     entry.visibility.value,
@@ -325,7 +328,7 @@ class SQLiteMemoryStore:
             row = conn.execute(
                 """
                 SELECT * FROM entries
-                WHERE workspace_id = ? AND project_id = ? AND content_hash = ?
+                WHERE workspace_id = ? AND project_id = ? AND scope_level = ? AND content_hash = ?
                   AND status != ?
                 ORDER BY updated_at DESC
                 LIMIT 1
@@ -333,6 +336,7 @@ class SQLiteMemoryStore:
                 (
                     scope.workspace_id,
                     scope.project_id,
+                    scope.scope_level.value,
                     content_hash,
                     EntryStatus.INVALIDATED.value,
                 ),
@@ -440,20 +444,37 @@ class SQLiteMemoryStore:
     def list_embeddings(
         self,
         version_id: str,
-        scope: ScopeRef,
+        scopes: list[ScopeRef] | None = None,
         include_invalidated: bool = False,
+        *,
+        scope: ScopeRef | None = None,
     ) -> list[tuple[MemoryEntry, list[float]]]:
+        if scope is not None:
+            scopes = [scope]
+        if not scopes:
+            return []
         sql = [
             """
             SELECT e.*, em.vector_json
             FROM entries e
             INNER JOIN embeddings em ON em.entry_id = e.id
             WHERE em.version_id = ?
-              AND e.workspace_id = ?
-              AND e.project_id = ?
             """,
         ]
-        params: list = [version_id, scope.workspace_id, scope.project_id]
+        params: list = [version_id]
+        scope_predicates: list[str] = []
+        for scope in scopes:
+            scope_predicates.append(
+                "(e.workspace_id = ? AND e.project_id = ? AND e.scope_level = ?)"
+            )
+            params.extend(
+                [
+                    scope.workspace_id,
+                    scope.project_id,
+                    scope.scope_level.value,
+                ]
+            )
+        sql.append("AND (" + " OR ".join(scope_predicates) + ")")
 
         if not include_invalidated:
             sql.append("AND e.status != ?")
@@ -569,6 +590,23 @@ class SQLiteMemoryStore:
                 ).fetchall()
             return [self._entry_from_row(conn, row) for row in rows]
 
+    def count_entries_for_scope(self, scope: ScopeRef, *, include_invalidated: bool = False) -> int:
+        sql = [
+            """
+            SELECT COUNT(1) AS c FROM entries
+            WHERE workspace_id = ? AND project_id = ? AND scope_level = ?
+            """
+        ]
+        params: list = [scope.workspace_id, scope.project_id, scope.scope_level.value]
+        if not include_invalidated:
+            sql.append("AND status != ?")
+            params.append(EntryStatus.INVALIDATED.value)
+            sql.append("AND type != ?")
+            params.append(EntryType.INVALIDATED.value)
+        with self._conn() as conn:
+            row = conn.execute(" ".join(sql), params).fetchone()
+            return int(row["c"] if row else 0)
+
     def _replace_links(self, conn: sqlite3.Connection, entry_id: str, links: Iterable[EntryLink]) -> None:
         conn.execute("DELETE FROM links WHERE entry_id = ?", (entry_id,))
         for link in links:
@@ -597,6 +635,7 @@ class SQLiteMemoryStore:
             scope=ScopeRef(
                 workspace_id=row["workspace_id"],
                 project_id=row["project_id"],
+                scope_level=row["scope_level"],
                 user_id=row["user_id"],
                 agent_id=row["agent_id"],
             ),
