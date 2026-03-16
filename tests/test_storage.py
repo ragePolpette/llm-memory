@@ -43,6 +43,8 @@ async def test_dedup_hash(service):
 async def test_scope_isolation(service):
     actor_a = ActorContext(agent_id="agent-a", user_id="user-a", workspace_id="ws-test", project_id="project-a")
     actor_b = ActorContext(agent_id="agent-b", user_id="user-b", workspace_id="ws-test", project_id="project-b")
+    service.create_project(actor=actor_a, project_id="project-a")
+    service.create_project(actor=actor_b, project_id="project-b")
 
     await service.add(
         {

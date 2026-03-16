@@ -18,6 +18,14 @@ class MemoryScope(str, Enum):
     GLOBAL = "global"
 
 
+class ScopeLevel(str, Enum):
+    """Livello logico di scope per la gerarchia memoria."""
+
+    PROJECT = "project"
+    WORKSPACE = "workspace"
+    GLOBAL = "global"
+
+
 class Tier(str, Enum):
     """Tier di memoria."""
 
@@ -156,6 +164,9 @@ class Config(BaseModel):
     )
 
     # Default scopes/context
+    multi_project_enabled: bool = Field(
+        default_factory=lambda: _env_bool("MEMORY_MULTI_PROJECT_ENABLED", False)
+    )
     default_workspace_id: str = Field(default_factory=lambda: os.getenv("MEMORY_WORKSPACE_ID", "default"))
     default_project_id: str = Field(default_factory=lambda: os.getenv("MEMORY_PROJECT_ID", "default"))
 

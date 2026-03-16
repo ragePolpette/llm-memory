@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from .config import MemoryScope, Tier
+from .config import MemoryScope, ScopeLevel, Tier
 
 
 def utc_now() -> datetime:
@@ -48,6 +48,7 @@ class ScopeRef(BaseModel):
 
     workspace_id: str = "default"
     project_id: str = "default"
+    scope_level: ScopeLevel = ScopeLevel.PROJECT
     user_id: Optional[str] = None
     agent_id: Optional[str] = None
 

@@ -37,14 +37,14 @@ class SQLiteVectorStore(VectorStore):
     def search(
         self,
         query_vector: list[float],
-        scope: ScopeRef,
+        scopes: list[ScopeRef],
         version_id: str,
         limit: int = 10,
         include_invalidated: bool = False,
     ) -> list[tuple[MemoryEntry, float]]:
         candidates = self.store.list_embeddings(
             version_id=version_id,
-            scope=scope,
+            scopes=scopes,
             include_invalidated=include_invalidated,
         )
         scored = [(entry, cosine_similarity(query_vector, vec)) for entry, vec in candidates]
@@ -54,14 +54,14 @@ class SQLiteVectorStore(VectorStore):
     def similarity_search(
         self,
         probe_vector: list[float],
-        scope: ScopeRef,
+        scopes: list[ScopeRef],
         version_id: str,
         threshold: float,
         limit: int = 5,
     ) -> list[tuple[MemoryEntry, float]]:
         matches = self.search(
             query_vector=probe_vector,
-            scope=scope,
+            scopes=scopes,
             version_id=version_id,
             limit=max(limit * 3, limit),
             include_invalidated=False,
