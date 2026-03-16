@@ -64,7 +64,9 @@ def _require_explicit_project_scope(name: str, arguments: dict, service: MemoryS
     project_id = str(scope.get("project_id") or "").strip()
     if not project_id:
         raise ValueError(
-            "multi-project mode requires explicit scope.project_id for project-scoped operations"
+            f"{name} requires explicit scope.project_id for project-scoped operations when "
+            "MEMORY_MULTI_PROJECT_ENABLED=true. Pass scope.project_id explicitly or choose "
+            "scope.scope_level=workspace|global."
         )
 
 
@@ -79,7 +81,9 @@ def register_tools(server: Server, memory_service: MemoryService):
                 description=(
                     "Scopo, confini e guida compilazione: salva solo memorie operative persistenti "
                     "(decisioni, fatti stabili, regole, assunzioni). Non salvare contesto temporaneo "
-                    "di chat o retrieval di codice repository."
+                    "di chat o retrieval di codice repository. Espone il modello corrente di "
+                    "single-project mode / multi-project mode e la scope hierarchy "
+                    "project/workspace/global."
                 ),
                 inputSchema={
                     "type": "object",
@@ -115,11 +119,21 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.create_project",
-                description="Crea esplicitamente un progetto nel workspace corrente se non esiste.",
+                description=(
+                    "Crea esplicitamente un progetto nel workspace corrente se non esiste. In "
+                    "multi-project mode e' il percorso amministrativo raccomandato prima delle "
+                    "scritture project-scoped."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "project_id": {"type": "string"},
+                        "project_id": {
+                            "type": "string",
+                            "description": (
+                                "Identificatore stabile del progetto da creare o recuperare nel "
+                                "catalogo progetti del workspace corrente."
+                            ),
+                        },
                         "display_name": {"type": "string"},
                         "description": {"type": "string"},
                         "metadata": {"type": "object"},
@@ -132,7 +146,10 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.scope_overview",
-                description="Mostra conteggi e bucket operativi per scope project/workspace/global.",
+                description=(
+                    "Mostra i bucket operativi e i conteggi correnti per la scope hierarchy "
+                    "project/workspace/global nel workspace attivo."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -148,7 +165,9 @@ def register_tools(server: Server, memory_service: MemoryService):
                 description=(
                     "Aggiunge memoria operativa persistente tiered. Usare per decisioni/fatti/regole riusabili, "
                     "non per dump di contesto. Compilare sempre writer_model + context_fingerprint + importance "
-                    "quando enforcement self-eval e attivo."
+                    "quando enforcement self-eval e attivo. scope.scope_level definisce il bucket "
+                    "intenzionale (project/workspace/global); in multi-project mode le scritture "
+                    "project-scoped richiedono scope.project_id esplicito."
                 ),
                 inputSchema={
                     "type": "object",
@@ -170,13 +189,27 @@ def register_tools(server: Server, memory_service: MemoryService):
                         },
                         "scope": {
                             "type": "object",
+                            "description": (
+                                "Scope esplicito della memoria. Usare scope_level per scegliere il "
+                                "bucket target nella scope hierarchy."
+                            ),
                             "properties": {
                                 "scope_level": {
                                     "type": "string",
                                     "enum": ["project", "workspace", "global"],
+                                    "description": (
+                                        "Livello di scope intenzionale per la scrittura: project, "
+                                        "workspace o global."
+                                    ),
                                 },
                                 "workspace_id": {"type": "string"},
-                                "project_id": {"type": "string"},
+                                "project_id": {
+                                    "type": "string",
+                                    "description": (
+                                        "Richiesto per scritture project-scoped quando "
+                                        "MEMORY_MULTI_PROJECT_ENABLED=true."
+                                    ),
+                                },
                                 "user_id": {"type": "string"},
                                 "agent_id": {"type": "string"},
                             },
@@ -249,20 +282,62 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.search",
-                description="Ricerca semantica su memorie operative persistenti; non destinato a contesto codice repository.",
+                description=(
+                    "Ricerca semantica su memorie operative persistenti; non destinato a contesto "
+                    "codice repository. Supporta composizione esplicita degli scope "
+                    "project/workspace/global tramite include_project/include_workspace/include_global."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "query": {"type": "string"},
                         "agent_id": {"type": "string"},
                         "user_id": {"type": "string"},
-                        "scope": {"type": "object"},
+                        "scope": {
+                            "type": "object",
+                            "description": (
+                                "Scope base della ricerca. Se lo scope_level resta project e il "
+                                "server e' in multi-project mode, usare scope.project_id esplicito."
+                            ),
+                            "properties": {
+                                "scope_level": {
+                                    "type": "string",
+                                    "enum": ["project", "workspace", "global"],
+                                    "description": (
+                                        "Scope base della ricerca. Le flag include_* possono "
+                                        "ampliare la composizione verso altri bucket."
+                                    ),
+                                },
+                                "workspace_id": {"type": "string"},
+                                "project_id": {
+                                    "type": "string",
+                                    "description": (
+                                        "Project scope di partenza. Richiesto per ricerche "
+                                        "project-scoped quando MEMORY_MULTI_PROJECT_ENABLED=true."
+                                    ),
+                                },
+                                "user_id": {"type": "string"},
+                                "agent_id": {"type": "string"},
+                            },
+                        },
                         "limit": {"type": "integer", "default": 10},
                         "include_invalidated": {"type": "boolean", "default": False},
                         "tier": {"type": "string", "enum": ["tier-1", "tier-2", "tier-3"]},
-                        "include_project": {"type": "boolean", "default": True},
-                        "include_workspace": {"type": "boolean", "default": True},
-                        "include_global": {"type": "boolean", "default": True},
+                        "include_project": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Include i bucket project-scoped nella composizione della ricerca.",
+                        },
+                        "include_workspace": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Include i bucket workspace-scoped nella composizione della ricerca.",
+                        },
+                        "include_global": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Include i bucket global/shared nella composizione della ricerca.",
+                        },
                     },
                     "required": ["query", "agent_id"],
                 },
