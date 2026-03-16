@@ -22,6 +22,7 @@ from ..models import (
     ImportResult,
     MemoryBundle,
     MemoryEntry,
+    ProjectRecord,
     ReembedResult,
     ScopeRef,
     compute_content_hash,
@@ -103,6 +104,7 @@ class MemoryService:
     """Servizio principale memoria persistente locale."""
 
     _JSONL_IMPORT_ALLOWED_FIELDS = frozenset(MemoryEntry.model_fields.keys())
+    _PROJECT_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]{1,63}$"
 
     def __init__(
         self,
@@ -119,6 +121,73 @@ class MemoryService:
         self.embedding_provider = embedding_provider
         self.privacy_policy = privacy_policy
         self.cipher = cipher
+        self._ensure_default_project_record()
+
+    def _ensure_default_project_record(self) -> None:
+        default_project = ProjectRecord(
+            workspace_id=self.config.default_workspace_id,
+            project_id=self.config.default_project_id,
+            display_name=self.config.default_project_id,
+            metadata={"source": "bootstrap-default"},
+        )
+        self.store.upsert_project(default_project)
+
+    def _validate_project_identifier(self, project_id: str) -> str:
+        normalized = str(project_id).strip().lower()
+        if not normalized:
+            raise ValueError("project_id must be a non-empty string")
+        import re
+
+        if not re.match(self._PROJECT_ID_PATTERN, normalized):
+            raise ValueError(
+                "project_id must match ^[a-z0-9][a-z0-9._-]{1,63}$"
+            )
+        return normalized
+
+    def list_projects(self, actor: ActorContext) -> list[ProjectRecord]:
+        return self.store.list_projects(actor.workspace_id)
+
+    def get_project_info(self, actor: ActorContext, project_id: str) -> Optional[ProjectRecord]:
+        normalized = self._validate_project_identifier(project_id)
+        return self.store.get_project(actor.workspace_id, normalized)
+
+    def create_project(
+        self,
+        *,
+        actor: ActorContext,
+        project_id: str,
+        display_name: Optional[str] = None,
+        description: str = "",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> ProjectRecord:
+        normalized = self._validate_project_identifier(project_id)
+        existing = self.store.get_project(actor.workspace_id, normalized)
+        if existing is not None:
+            return existing
+        now = utc_now_iso()
+        project = ProjectRecord(
+            workspace_id=actor.workspace_id,
+            project_id=normalized,
+            display_name=(display_name or normalized).strip() or normalized,
+            description=description.strip(),
+            metadata=metadata or {},
+            created_at=now,
+            updated_at=now,
+        )
+        self.store.upsert_project(project)
+        self.store.add_audit(
+            AuditEvent(
+                action="create_project",
+                actor=actor.agent_id,
+                reason="explicit_create_project",
+                payload={
+                    "workspace_id": actor.workspace_id,
+                    "project_id": normalized,
+                    "display_name": project.display_name,
+                },
+            )
+        )
+        return project
 
     def _validate_write_payload(self, payload: dict[str, Any]) -> None:
         content = payload.get("content")

@@ -16,6 +16,7 @@ from ..models import (
     EntryStatus,
     EntryType,
     MemoryEntry,
+    ProjectRecord,
     ScopeRef,
 )
 
@@ -75,6 +76,20 @@ class SQLiteMemoryStore:
                 CREATE INDEX IF NOT EXISTS idx_entries_hash_scope
                     ON entries(workspace_id, project_id, content_hash);
 
+                CREATE TABLE IF NOT EXISTS projects (
+                    workspace_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(workspace_id, project_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_projects_workspace
+                    ON projects(workspace_id, project_id);
+
                 CREATE TABLE IF NOT EXISTS links (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     entry_id TEXT NOT NULL,
@@ -129,6 +144,61 @@ class SQLiteMemoryStore:
         if hasattr(value, "isoformat"):
             return value.isoformat()
         return str(value)
+
+    def upsert_project(self, project: ProjectRecord) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO projects (
+                    workspace_id, project_id, display_name, description,
+                    metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workspace_id, project_id) DO UPDATE SET
+                    display_name=excluded.display_name,
+                    description=excluded.description,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    project.workspace_id,
+                    project.project_id,
+                    project.display_name,
+                    project.description,
+                    json.dumps(project.metadata, ensure_ascii=True, sort_keys=True),
+                    self._to_iso(project.created_at),
+                    self._to_iso(project.updated_at),
+                ),
+            )
+
+    def get_project(self, workspace_id: str, project_id: str) -> Optional[ProjectRecord]:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM projects
+                WHERE workspace_id = ? AND project_id = ?
+                """,
+                (workspace_id, project_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._project_from_row(row)
+
+    def list_projects(self, workspace_id: Optional[str] = None) -> list[ProjectRecord]:
+        with self._conn() as conn:
+            if workspace_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM projects ORDER BY workspace_id ASC, project_id ASC"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM projects
+                    WHERE workspace_id = ?
+                    ORDER BY project_id ASC
+                    """,
+                    (workspace_id,),
+                ).fetchall()
+            return [self._project_from_row(row) for row in rows]
 
     def add_entry(self, entry: MemoryEntry) -> None:
         with self._conn() as conn:
@@ -560,4 +630,16 @@ class SQLiteMemoryStore:
             config=json.loads(row["config_json"]),
             created_at=row["created_at"],
             active=bool(row["active"]),
+        )
+
+    @staticmethod
+    def _project_from_row(row: sqlite3.Row) -> ProjectRecord:
+        return ProjectRecord(
+            workspace_id=row["workspace_id"],
+            project_id=row["project_id"],
+            display_name=row["display_name"],
+            description=row["description"],
+            metadata=json.loads(row["metadata_json"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
