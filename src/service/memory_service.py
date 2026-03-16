@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from ..config import Config, MemoryScope, Tier
+from ..config import Config, MemoryScope, ScopeLevel, Tier
 from ..embedding.embedding_service import EmbeddingProvider
 from ..models import (
     AuditEvent,
@@ -22,6 +22,7 @@ from ..models import (
     ImportResult,
     MemoryBundle,
     MemoryEntry,
+    ProjectRecord,
     ReembedResult,
     ScopeRef,
     compute_content_hash,
@@ -103,6 +104,10 @@ class MemoryService:
     """Servizio principale memoria persistente locale."""
 
     _JSONL_IMPORT_ALLOWED_FIELDS = frozenset(MemoryEntry.model_fields.keys())
+    _PROJECT_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]{1,63}$"
+    _WORKSPACE_BUCKET_PROJECT_ID = "__workspace__"
+    _GLOBAL_BUCKET_WORKSPACE_ID = "__global__"
+    _GLOBAL_BUCKET_PROJECT_ID = "__global__"
 
     def __init__(
         self,
@@ -119,6 +124,104 @@ class MemoryService:
         self.embedding_provider = embedding_provider
         self.privacy_policy = privacy_policy
         self.cipher = cipher
+        self._ensure_default_project_record()
+
+    def _ensure_default_project_record(self) -> None:
+        default_project = ProjectRecord(
+            workspace_id=self.config.default_workspace_id,
+            project_id=self.config.default_project_id,
+            display_name=self.config.default_project_id,
+            metadata={"source": "bootstrap-default"},
+        )
+        self.store.upsert_project(default_project)
+
+    def _validate_project_identifier(self, project_id: str) -> str:
+        normalized = str(project_id).strip().lower()
+        if not normalized:
+            raise ValueError("project_id must be a non-empty string")
+        import re
+
+        if not re.match(self._PROJECT_ID_PATTERN, normalized):
+            raise ValueError(
+                "project_id must match ^[a-z0-9][a-z0-9._-]{1,63}$"
+            )
+        return normalized
+
+    def list_projects(self, actor: ActorContext) -> list[ProjectRecord]:
+        return self.store.list_projects(actor.workspace_id)
+
+    def scope_overview(self, actor: ActorContext) -> dict[str, Any]:
+        project_scope = ScopeRef(
+            workspace_id=actor.workspace_id,
+            project_id=actor.project_id,
+            scope_level=ScopeLevel.PROJECT,
+        )
+        workspace_scope = ScopeRef(
+            workspace_id=actor.workspace_id,
+            project_id=self._WORKSPACE_BUCKET_PROJECT_ID,
+            scope_level=ScopeLevel.WORKSPACE,
+        )
+        global_scope = ScopeRef(
+            workspace_id=self._GLOBAL_BUCKET_WORKSPACE_ID,
+            project_id=self._GLOBAL_BUCKET_PROJECT_ID,
+            scope_level=ScopeLevel.GLOBAL,
+        )
+        return {
+            "project": {
+                "workspace_id": actor.workspace_id,
+                "project_id": actor.project_id,
+                "count": self.store.count_entries_for_scope(project_scope),
+            },
+            "workspace": {
+                "workspace_id": actor.workspace_id,
+                "count": self.store.count_entries_for_scope(workspace_scope),
+            },
+            "global": {
+                "count": self.store.count_entries_for_scope(global_scope),
+            },
+        }
+
+    def get_project_info(self, actor: ActorContext, project_id: str) -> Optional[ProjectRecord]:
+        normalized = self._validate_project_identifier(project_id)
+        return self.store.get_project(actor.workspace_id, normalized)
+
+    def create_project(
+        self,
+        *,
+        actor: ActorContext,
+        project_id: str,
+        display_name: Optional[str] = None,
+        description: str = "",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> ProjectRecord:
+        normalized = self._validate_project_identifier(project_id)
+        existing = self.store.get_project(actor.workspace_id, normalized)
+        if existing is not None:
+            return existing
+        now = utc_now_iso()
+        project = ProjectRecord(
+            workspace_id=actor.workspace_id,
+            project_id=normalized,
+            display_name=(display_name or normalized).strip() or normalized,
+            description=description.strip(),
+            metadata=metadata or {},
+            created_at=now,
+            updated_at=now,
+        )
+        self.store.upsert_project(project)
+        self.store.add_audit(
+            AuditEvent(
+                action="create_project",
+                actor=actor.agent_id,
+                reason="explicit_create_project",
+                payload={
+                    "workspace_id": actor.workspace_id,
+                    "project_id": normalized,
+                    "display_name": project.display_name,
+                },
+            )
+        )
+        return project
 
     def _validate_write_payload(self, payload: dict[str, Any]) -> None:
         content = payload.get("content")
@@ -319,6 +422,7 @@ class MemoryService:
         return ScopeRef(
             workspace_id=self.config.default_workspace_id,
             project_id=self.config.default_project_id,
+            scope_level=ScopeLevel.PROJECT,
             user_id=user_id,
             agent_id=agent_id,
         )
@@ -350,12 +454,87 @@ class MemoryService:
 
     def _scope_from_payload(self, payload: dict, actor: ActorContext) -> ScopeRef:
         scope_payload = payload.get("scope") or {}
-        return ScopeRef(
+        raw_scope_level = (
+            scope_payload.get("scope_level")
+            or scope_payload.get("level")
+            or payload.get("scope_level")
+            or "project"
+        )
+        scope_level = ScopeLevel(str(raw_scope_level).strip().lower())
+        scope = ScopeRef(
             workspace_id=scope_payload.get("workspace_id", actor.workspace_id),
             project_id=scope_payload.get("project_id", actor.project_id),
+            scope_level=scope_level,
             user_id=scope_payload.get("user_id", actor.user_id),
             agent_id=scope_payload.get("agent_id", actor.agent_id),
         )
+        return self._normalize_scope(scope)
+
+    def _normalize_scope(self, scope: ScopeRef) -> ScopeRef:
+        if scope.scope_level == ScopeLevel.PROJECT:
+            normalized_project_id = self._validate_project_identifier(scope.project_id)
+            return ScopeRef(
+                workspace_id=scope.workspace_id,
+                project_id=normalized_project_id,
+                scope_level=ScopeLevel.PROJECT,
+                user_id=scope.user_id,
+                agent_id=scope.agent_id,
+            )
+        if scope.scope_level == ScopeLevel.WORKSPACE:
+            return ScopeRef(
+                workspace_id=scope.workspace_id,
+                project_id=self._WORKSPACE_BUCKET_PROJECT_ID,
+                scope_level=ScopeLevel.WORKSPACE,
+                user_id=scope.user_id,
+                agent_id=scope.agent_id,
+            )
+        return ScopeRef(
+            workspace_id=self._GLOBAL_BUCKET_WORKSPACE_ID,
+            project_id=self._GLOBAL_BUCKET_PROJECT_ID,
+            scope_level=ScopeLevel.GLOBAL,
+            user_id=scope.user_id,
+            agent_id=scope.agent_id,
+        )
+
+    def _scope_exists(self, scope: ScopeRef) -> bool:
+        if scope.scope_level != ScopeLevel.PROJECT:
+            return True
+        return self.store.get_project(scope.workspace_id, scope.project_id) is not None
+
+    def _search_scopes(
+        self,
+        actor: ActorContext,
+        *,
+        include_project: bool,
+        include_workspace: bool,
+        include_global: bool,
+    ) -> list[ScopeRef]:
+        scopes: list[ScopeRef] = []
+        if include_project:
+            scopes.append(
+                ScopeRef(
+                    workspace_id=actor.workspace_id,
+                    project_id=actor.project_id,
+                    scope_level=ScopeLevel.PROJECT,
+                )
+            )
+        if include_workspace:
+            scopes.append(
+                ScopeRef(
+                    workspace_id=actor.workspace_id,
+                    project_id=self._WORKSPACE_BUCKET_PROJECT_ID,
+                    scope_level=ScopeLevel.WORKSPACE,
+                )
+            )
+        if include_global:
+            scopes.append(
+                ScopeRef(
+                    workspace_id=self._GLOBAL_BUCKET_WORKSPACE_ID,
+                    project_id=self._GLOBAL_BUCKET_PROJECT_ID,
+                    scope_level=ScopeLevel.GLOBAL,
+                )
+            )
+        return scopes
 
     @staticmethod
     def _has_usable_embedding(vector: Any) -> bool:
@@ -364,25 +543,45 @@ class MemoryService:
         return any(float(component) != 0.0 for component in vector)
 
     def _can_read(self, actor: ActorContext, entry: MemoryEntry) -> bool:
-        if entry.scope.workspace_id != actor.workspace_id:
-            return False
-        if entry.scope.project_id != actor.project_id:
+        if entry.scope.scope_level == ScopeLevel.PROJECT:
+            if entry.scope.workspace_id != actor.workspace_id:
+                return False
+            if entry.scope.project_id != actor.project_id:
+                return False
+        elif entry.scope.scope_level == ScopeLevel.WORKSPACE:
+            if entry.scope.workspace_id != actor.workspace_id:
+                return False
+        elif entry.scope.scope_level == ScopeLevel.GLOBAL:
+            pass
+        else:
             return False
 
         if entry.visibility == MemoryScope.PRIVATE:
-            if entry.scope.user_id != actor.user_id:
+            # Legacy private entries without an owning agent should not become
+            # readable just because user/workspace/project happen to match.
+            if not entry.scope.agent_id:
+                return False
+            if entry.scope.user_id and entry.scope.user_id != actor.user_id:
                 return False
             if entry.scope.agent_id != actor.agent_id:
                 return False
         return True
 
     def _can_write(self, actor: ActorContext, visibility: MemoryScope, scope: ScopeRef) -> bool:
-        if visibility == MemoryScope.GLOBAL:
-            return False
-        if scope.workspace_id != actor.workspace_id:
-            return False
-        if scope.project_id != actor.project_id:
-            return False
+        if scope.scope_level == ScopeLevel.GLOBAL:
+            return visibility == MemoryScope.GLOBAL
+        if scope.scope_level == ScopeLevel.WORKSPACE:
+            if scope.workspace_id != actor.workspace_id:
+                return False
+            if visibility == MemoryScope.GLOBAL:
+                return False
+        else:
+            if scope.workspace_id != actor.workspace_id:
+                return False
+            if not self._scope_exists(scope):
+                return False
+            if visibility == MemoryScope.GLOBAL:
+                return False
         if visibility == MemoryScope.PRIVATE and scope.agent_id and scope.agent_id != actor.agent_id:
             return False
         return True
@@ -561,7 +760,7 @@ class MemoryService:
                 embedding_status = "ok"
                 novelty_candidates = self.vector_store.search(
                     query_vector=query_vec,
-                    scope=scope,
+                    scopes=[scope],
                     version_id=version.version_id,
                     limit=5,
                     include_invalidated=False,
@@ -628,7 +827,7 @@ class MemoryService:
             try:
                 semantic_matches = self.vector_store.similarity_search(
                     probe_vector=query_vec,
-                    scope=scope,
+                    scopes=[scope],
                     version_id=version.version_id,
                     threshold=self.config.dedup_semantic_threshold,
                     limit=1,
@@ -786,7 +985,11 @@ class MemoryService:
         include_invalidated: bool = False,
         tier: Optional[str] = None,
     ) -> list[MemoryEntry]:
-        scope = ScopeRef(workspace_id=actor.workspace_id, project_id=actor.project_id)
+        scope = ScopeRef(
+            workspace_id=actor.workspace_id,
+            project_id=actor.project_id,
+            scope_level=ScopeLevel.PROJECT,
+        )
         requested_tier = Tier(tier) if tier else None
         entries = self.store.list_entries(
             scope=scope,
@@ -803,6 +1006,9 @@ class MemoryService:
         limit: int = 10,
         include_invalidated: bool = False,
         tier: Optional[str] = None,
+        include_project: bool = True,
+        include_workspace: bool = True,
+        include_global: bool = True,
     ) -> list[MemoryBundle]:
         self._log_activity(
             "query_in",
@@ -817,13 +1023,18 @@ class MemoryService:
                 "tier": tier,
             },
         )
-        scope = ScopeRef(workspace_id=actor.workspace_id, project_id=actor.project_id)
+        scopes = self._search_scopes(
+            actor,
+            include_project=include_project,
+            include_workspace=include_workspace,
+            include_global=include_global,
+        )
         version = self.store.get_active_embedding_version() or self._current_embedding_version()
         query_vector = (await self.embedding_provider.embed([query]))[0]
 
         candidates = self.vector_store.search(
             query_vector=query_vector,
-            scope=scope,
+            scopes=scopes,
             version_id=version.version_id,
             limit=max(limit * 4, 20),
             include_invalidated=include_invalidated,
@@ -840,7 +1051,7 @@ class MemoryService:
             ):
                 continue
 
-            score = self._rank(entry, similarity)
+            score = self._rank(entry, similarity, actor=actor)
             bundles.append(
                 MemoryBundle(
                     entry_id=entry.id,
@@ -873,7 +1084,7 @@ class MemoryService:
         )
         return result
 
-    def _rank(self, entry: MemoryEntry, similarity: float) -> float:
+    def _rank(self, entry: MemoryEntry, similarity: float, *, actor: ActorContext) -> float:
         now = datetime.now(timezone.utc)
         updated = entry.updated_at
         if isinstance(updated, str):
@@ -891,6 +1102,11 @@ class MemoryService:
             EntryStatus.SUPERSEDED: 0.35,
             EntryStatus.INVALIDATED: 0.0,
         }[entry.status]
+        scope_score = {
+            ScopeLevel.PROJECT: 1.0 if entry.scope.project_id == actor.project_id else 0.0,
+            ScopeLevel.WORKSPACE: 0.85,
+            ScopeLevel.GLOBAL: 0.7,
+        }[entry.scope.scope_level]
 
         weighted = (
             similarity * self.config.ranking_similarity_weight
@@ -898,7 +1114,7 @@ class MemoryService:
             + tier_score * self.config.ranking_tier_weight
             + status_score * self.config.ranking_status_weight
         )
-        return max(0.0, min(1.0, weighted))
+        return max(0.0, min(1.0, weighted * scope_score))
 
     def invalidate(
         self,
@@ -1219,7 +1435,11 @@ class MemoryService:
         resolved_path = self._resolve_exchange_path(path, must_exist=False)
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
         entries = self.store.export_entries(
-            scope=ScopeRef(workspace_id=actor.workspace_id, project_id=actor.project_id)
+            scope=ScopeRef(
+                workspace_id=actor.workspace_id,
+                project_id=actor.project_id,
+                scope_level=ScopeLevel.PROJECT,
+            )
         )
 
         if fmt == "jsonl":
@@ -1266,6 +1486,7 @@ class MemoryService:
         scope = target_scope or ScopeRef(
             workspace_id=actor.workspace_id,
             project_id=actor.project_id,
+            scope_level=ScopeLevel.PROJECT,
             user_id=actor.user_id,
             agent_id=actor.agent_id,
         )
