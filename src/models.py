@@ -52,6 +52,18 @@ class ScopeRef(BaseModel):
     agent_id: Optional[str] = None
 
 
+class ProjectRecord(BaseModel):
+    """Metadata progetto per discovery e amministrazione scope."""
+
+    workspace_id: str = "default"
+    project_id: str
+    display_name: str
+    description: str = ""
+    metadata: dict = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class EntryLink(BaseModel):
     """Link esplicito fra entry."""
 

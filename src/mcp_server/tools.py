@@ -59,6 +59,50 @@ def register_tools(server: Server, memory_service: MemoryService):
                 },
             ),
             Tool(
+                name="memory.list_projects",
+                description="Elenca i progetti registrati nel workspace corrente.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.get_project_info",
+                description="Restituisce metadata e stato di un progetto registrato.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["project_id", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.create_project",
+                description="Crea esplicitamente un progetto nel workspace corrente se non esiste.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string"},
+                        "display_name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "metadata": {"type": "object"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["project_id", "agent_id"],
+                },
+            ),
+            Tool(
                 name="memory.add",
                 description=(
                     "Aggiunge memoria operativa persistente tiered. Usare per decisioni/fatti/regole riusabili, "
@@ -287,7 +331,7 @@ def register_tools(server: Server, memory_service: MemoryService):
                     "self_eval_enforced": bool(memory_service.config.self_eval_enforced),
                     "purpose": "Memoria operativa persistente (decisioni, preferenze, regole, fatti di lavoro).",
                     "capabilities": [
-                        "add/search/get/invalidate/promote/reembed/export/import"
+                        "list_projects/get_project_info/create_project/add/search/get/invalidate/promote/reembed/export/import"
                     ],
                     "boundaries": [
                         "Non salvare memorie di contesto temporaneo conversazionale",
@@ -327,6 +371,40 @@ def register_tools(server: Server, memory_service: MemoryService):
                             "prompt_fingerprint",
                         ],
                     },
+                }
+            )
+
+        if name == "memory.list_projects":
+            projects = memory_service.list_projects(actor)
+            return _json_text(
+                {
+                    "api_version": "v2",
+                    "count": len(projects),
+                    "projects": [project.model_dump(mode="json") for project in projects],
+                }
+            )
+
+        if name == "memory.get_project_info":
+            project = memory_service.get_project_info(actor, arguments["project_id"])
+            return _json_text(
+                {
+                    "api_version": "v2",
+                    "project": project.model_dump(mode="json") if project else None,
+                }
+            )
+
+        if name == "memory.create_project":
+            project = memory_service.create_project(
+                actor=actor,
+                project_id=arguments["project_id"],
+                display_name=arguments.get("display_name"),
+                description=arguments.get("description", ""),
+                metadata=arguments.get("metadata"),
+            )
+            return _json_text(
+                {
+                    "api_version": "v2",
+                    "project": project.model_dump(mode="json"),
                 }
             )
 
