@@ -40,6 +40,34 @@ def _actor_from_args(args: dict, service: MemoryService) -> ActorContext:
     )
 
 
+def _require_explicit_project_scope(name: str, arguments: dict, service: MemoryService) -> None:
+    if not service.config.multi_project_enabled:
+        return
+    if name not in {
+        "memory.add",
+        "memory.search",
+        "memory.get",
+        "memory.invalidate",
+        "memory.promote",
+        "memory.reembed",
+        "memory.export",
+        "memory.import",
+    }:
+        return
+    raw_scope = arguments.get("scope")
+    scope = raw_scope if isinstance(raw_scope, dict) else {}
+    scope_level = str(
+        scope.get("scope_level") or scope.get("level") or arguments.get("scope_level") or "project"
+    ).strip().lower()
+    if scope_level in {"workspace", "global"}:
+        return
+    project_id = str(scope.get("project_id") or "").strip()
+    if not project_id:
+        raise ValueError(
+            "multi-project mode requires explicit scope.project_id for project-scoped operations"
+        )
+
+
 def register_tools(server: Server, memory_service: MemoryService):
     """Registra tool MCP v2."""
 
@@ -56,6 +84,63 @@ def register_tools(server: Server, memory_service: MemoryService):
                 inputSchema={
                     "type": "object",
                     "properties": {},
+                },
+            ),
+            Tool(
+                name="memory.list_projects",
+                description="Elenca i progetti registrati nel workspace corrente.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.get_project_info",
+                description="Restituisce metadata e stato di un progetto registrato.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["project_id", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.create_project",
+                description="Crea esplicitamente un progetto nel workspace corrente se non esiste.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string"},
+                        "display_name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "metadata": {"type": "object"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["project_id", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.scope_overview",
+                description="Mostra conteggi e bucket operativi per scope project/workspace/global.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["agent_id"],
                 },
             ),
             Tool(
@@ -86,6 +171,10 @@ def register_tools(server: Server, memory_service: MemoryService):
                         "scope": {
                             "type": "object",
                             "properties": {
+                                "scope_level": {
+                                    "type": "string",
+                                    "enum": ["project", "workspace", "global"],
+                                },
                                 "workspace_id": {"type": "string"},
                                 "project_id": {"type": "string"},
                                 "user_id": {"type": "string"},
@@ -171,6 +260,9 @@ def register_tools(server: Server, memory_service: MemoryService):
                         "limit": {"type": "integer", "default": 10},
                         "include_invalidated": {"type": "boolean", "default": False},
                         "tier": {"type": "string", "enum": ["tier-1", "tier-2", "tier-3"]},
+                        "include_project": {"type": "boolean", "default": True},
+                        "include_workspace": {"type": "boolean", "default": True},
+                        "include_global": {"type": "boolean", "default": True},
                     },
                     "required": ["query", "agent_id"],
                 },
@@ -277,6 +369,7 @@ def register_tools(server: Server, memory_service: MemoryService):
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+        _require_explicit_project_scope(name, arguments, memory_service)
         actor = _actor_from_args(arguments, memory_service)
 
         if name == "memory.about":
@@ -286,8 +379,10 @@ def register_tools(server: Server, memory_service: MemoryService):
                     "server": "llm-memory",
                     "self_eval_enforced": bool(memory_service.config.self_eval_enforced),
                     "purpose": "Memoria operativa persistente (decisioni, preferenze, regole, fatti di lavoro).",
+                    "multi_project_enabled": bool(memory_service.config.multi_project_enabled),
+                    "scope_hierarchy": ["project", "workspace", "global"],
                     "capabilities": [
-                        "add/search/get/invalidate/promote/reembed/export/import"
+                        "list_projects/get_project_info/create_project/scope_overview/add/search/get/invalidate/promote/reembed/export/import"
                     ],
                     "boundaries": [
                         "Non salvare memorie di contesto temporaneo conversazionale",
@@ -330,6 +425,49 @@ def register_tools(server: Server, memory_service: MemoryService):
                 }
             )
 
+        if name == "memory.list_projects":
+            projects = memory_service.list_projects(actor)
+            return _json_text(
+                {
+                    "api_version": "v2",
+                    "count": len(projects),
+                    "projects": [project.model_dump(mode="json") for project in projects],
+                }
+            )
+
+        if name == "memory.get_project_info":
+            project = memory_service.get_project_info(actor, arguments["project_id"])
+            return _json_text(
+                {
+                    "api_version": "v2",
+                    "project": project.model_dump(mode="json") if project else None,
+                }
+            )
+
+        if name == "memory.create_project":
+            project = memory_service.create_project(
+                actor=actor,
+                project_id=arguments["project_id"],
+                display_name=arguments.get("display_name"),
+                description=arguments.get("description", ""),
+                metadata=arguments.get("metadata"),
+            )
+            return _json_text(
+                {
+                    "api_version": "v2",
+                    "project": project.model_dump(mode="json"),
+                }
+            )
+
+        if name == "memory.scope_overview":
+            return _json_text(
+                {
+                    "api_version": "v2",
+                    "multi_project_enabled": bool(memory_service.config.multi_project_enabled),
+                    "overview": memory_service.scope_overview(actor),
+                }
+            )
+
         if name == "memory.add":
             try:
                 payload = await memory_service.add(arguments, actor, write_path="add")
@@ -345,6 +483,9 @@ def register_tools(server: Server, memory_service: MemoryService):
                 limit=int(arguments.get("limit", 10)),
                 include_invalidated=bool(arguments.get("include_invalidated", False)),
                 tier=arguments.get("tier"),
+                include_project=bool(arguments.get("include_project", True)),
+                include_workspace=bool(arguments.get("include_workspace", True)),
+                include_global=bool(arguments.get("include_global", True)),
             )
             return _json_text({"api_version": "v2", "count": len(bundles), "bundles": [b.model_dump(mode="json") for b in bundles]})
 

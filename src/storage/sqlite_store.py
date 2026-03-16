@@ -16,6 +16,7 @@ from ..models import (
     EntryStatus,
     EntryType,
     MemoryEntry,
+    ProjectRecord,
     ScopeRef,
 )
 
@@ -49,6 +50,7 @@ class SQLiteMemoryStore:
                     tier TEXT NOT NULL,
                     workspace_id TEXT NOT NULL,
                     project_id TEXT NOT NULL,
+                    scope_level TEXT NOT NULL DEFAULT 'project',
                     user_id TEXT,
                     agent_id TEXT,
                     visibility TEXT NOT NULL,
@@ -70,10 +72,24 @@ class SQLiteMemoryStore:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_entries_scope
-                    ON entries(workspace_id, project_id, status, tier, updated_at);
+                    ON entries(workspace_id, project_id, scope_level, status, tier, updated_at);
 
                 CREATE INDEX IF NOT EXISTS idx_entries_hash_scope
                     ON entries(workspace_id, project_id, content_hash);
+
+                CREATE TABLE IF NOT EXISTS projects (
+                    workspace_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(workspace_id, project_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_projects_workspace
+                    ON projects(workspace_id, project_id);
 
                 CREATE TABLE IF NOT EXISTS links (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,22 +146,78 @@ class SQLiteMemoryStore:
             return value.isoformat()
         return str(value)
 
+    def upsert_project(self, project: ProjectRecord) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO projects (
+                    workspace_id, project_id, display_name, description,
+                    metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workspace_id, project_id) DO UPDATE SET
+                    display_name=excluded.display_name,
+                    description=excluded.description,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    project.workspace_id,
+                    project.project_id,
+                    project.display_name,
+                    project.description,
+                    json.dumps(project.metadata, ensure_ascii=True, sort_keys=True),
+                    self._to_iso(project.created_at),
+                    self._to_iso(project.updated_at),
+                ),
+            )
+
+    def get_project(self, workspace_id: str, project_id: str) -> Optional[ProjectRecord]:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM projects
+                WHERE workspace_id = ? AND project_id = ?
+                """,
+                (workspace_id, project_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._project_from_row(row)
+
+    def list_projects(self, workspace_id: Optional[str] = None) -> list[ProjectRecord]:
+        with self._conn() as conn:
+            if workspace_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM projects ORDER BY workspace_id ASC, project_id ASC"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM projects
+                    WHERE workspace_id = ?
+                    ORDER BY project_id ASC
+                    """,
+                    (workspace_id,),
+                ).fetchall()
+            return [self._project_from_row(row) for row in rows]
+
     def add_entry(self, entry: MemoryEntry) -> None:
         with self._conn() as conn:
             conn.execute(
                 """
                 INSERT INTO entries (
-                    id, tier, workspace_id, project_id, user_id, agent_id, visibility, source,
+                    id, tier, workspace_id, project_id, scope_level, user_id, agent_id, visibility, source,
                     type, status, content, context, tags_json, sensitivity_tags_json,
                     metadata_json, confidence, content_hash, created_at, updated_at,
                     embedding_version_id, encrypted, redacted
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry.id,
                     entry.tier.value,
                     entry.scope.workspace_id,
                     entry.scope.project_id,
+                    entry.scope.scope_level.value,
                     entry.scope.user_id,
                     entry.scope.agent_id,
                     entry.visibility.value,
@@ -173,7 +245,7 @@ class SQLiteMemoryStore:
             conn.execute(
                 """
                 UPDATE entries
-                SET tier=?, workspace_id=?, project_id=?, user_id=?, agent_id=?, visibility=?,
+                SET tier=?, workspace_id=?, project_id=?, scope_level=?, user_id=?, agent_id=?, visibility=?,
                     source=?, type=?, status=?, content=?, context=?, tags_json=?,
                     sensitivity_tags_json=?, metadata_json=?, confidence=?, content_hash=?,
                     updated_at=?, embedding_version_id=?, encrypted=?, redacted=?
@@ -183,6 +255,7 @@ class SQLiteMemoryStore:
                     entry.tier.value,
                     entry.scope.workspace_id,
                     entry.scope.project_id,
+                    entry.scope.scope_level.value,
                     entry.scope.user_id,
                     entry.scope.agent_id,
                     entry.visibility.value,
@@ -255,7 +328,7 @@ class SQLiteMemoryStore:
             row = conn.execute(
                 """
                 SELECT * FROM entries
-                WHERE workspace_id = ? AND project_id = ? AND content_hash = ?
+                WHERE workspace_id = ? AND project_id = ? AND scope_level = ? AND content_hash = ?
                   AND status != ?
                 ORDER BY updated_at DESC
                 LIMIT 1
@@ -263,6 +336,7 @@ class SQLiteMemoryStore:
                 (
                     scope.workspace_id,
                     scope.project_id,
+                    scope.scope_level.value,
                     content_hash,
                     EntryStatus.INVALIDATED.value,
                 ),
@@ -370,20 +444,37 @@ class SQLiteMemoryStore:
     def list_embeddings(
         self,
         version_id: str,
-        scope: ScopeRef,
+        scopes: list[ScopeRef] | None = None,
         include_invalidated: bool = False,
+        *,
+        scope: ScopeRef | None = None,
     ) -> list[tuple[MemoryEntry, list[float]]]:
+        if scope is not None:
+            scopes = [scope]
+        if not scopes:
+            return []
         sql = [
             """
             SELECT e.*, em.vector_json
             FROM entries e
             INNER JOIN embeddings em ON em.entry_id = e.id
             WHERE em.version_id = ?
-              AND e.workspace_id = ?
-              AND e.project_id = ?
             """,
         ]
-        params: list = [version_id, scope.workspace_id, scope.project_id]
+        params: list = [version_id]
+        scope_predicates: list[str] = []
+        for scope in scopes:
+            scope_predicates.append(
+                "(e.workspace_id = ? AND e.project_id = ? AND e.scope_level = ?)"
+            )
+            params.extend(
+                [
+                    scope.workspace_id,
+                    scope.project_id,
+                    scope.scope_level.value,
+                ]
+            )
+        sql.append("AND (" + " OR ".join(scope_predicates) + ")")
 
         if not include_invalidated:
             sql.append("AND e.status != ?")
@@ -499,6 +590,23 @@ class SQLiteMemoryStore:
                 ).fetchall()
             return [self._entry_from_row(conn, row) for row in rows]
 
+    def count_entries_for_scope(self, scope: ScopeRef, *, include_invalidated: bool = False) -> int:
+        sql = [
+            """
+            SELECT COUNT(1) AS c FROM entries
+            WHERE workspace_id = ? AND project_id = ? AND scope_level = ?
+            """
+        ]
+        params: list = [scope.workspace_id, scope.project_id, scope.scope_level.value]
+        if not include_invalidated:
+            sql.append("AND status != ?")
+            params.append(EntryStatus.INVALIDATED.value)
+            sql.append("AND type != ?")
+            params.append(EntryType.INVALIDATED.value)
+        with self._conn() as conn:
+            row = conn.execute(" ".join(sql), params).fetchone()
+            return int(row["c"] if row else 0)
+
     def _replace_links(self, conn: sqlite3.Connection, entry_id: str, links: Iterable[EntryLink]) -> None:
         conn.execute("DELETE FROM links WHERE entry_id = ?", (entry_id,))
         for link in links:
@@ -527,6 +635,7 @@ class SQLiteMemoryStore:
             scope=ScopeRef(
                 workspace_id=row["workspace_id"],
                 project_id=row["project_id"],
+                scope_level=row["scope_level"],
                 user_id=row["user_id"],
                 agent_id=row["agent_id"],
             ),
@@ -560,4 +669,16 @@ class SQLiteMemoryStore:
             config=json.loads(row["config_json"]),
             created_at=row["created_at"],
             active=bool(row["active"]),
+        )
+
+    @staticmethod
+    def _project_from_row(row: sqlite3.Row) -> ProjectRecord:
+        return ProjectRecord(
+            workspace_id=row["workspace_id"],
+            project_id=row["project_id"],
+            display_name=row["display_name"],
+            description=row["description"],
+            metadata=json.loads(row["metadata_json"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
