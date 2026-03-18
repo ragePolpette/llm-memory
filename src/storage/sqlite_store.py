@@ -71,12 +71,6 @@ class SQLiteMemoryStore:
                     redacted INTEGER NOT NULL DEFAULT 0
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_entries_scope
-                    ON entries(workspace_id, project_id, scope_level, status, tier, updated_at);
-
-                CREATE INDEX IF NOT EXISTS idx_entries_hash_scope
-                    ON entries(workspace_id, project_id, content_hash);
-
                 CREATE TABLE IF NOT EXISTS projects (
                     workspace_id TEXT NOT NULL,
                     project_id TEXT NOT NULL,
@@ -138,6 +132,27 @@ class SQLiteMemoryStore:
 
                 CREATE INDEX IF NOT EXISTS idx_embeddings_version ON embeddings(version_id);
                 """
+            )
+            self._migrate_legacy_schema(conn)
+            conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_entries_scope
+                    ON entries(workspace_id, project_id, scope_level, status, tier, updated_at);
+
+                CREATE INDEX IF NOT EXISTS idx_entries_hash_scope
+                    ON entries(workspace_id, project_id, content_hash);
+                """
+            )
+
+    @staticmethod
+    def _table_has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return any(str(row["name"]) == column_name for row in rows)
+
+    def _migrate_legacy_schema(self, conn: sqlite3.Connection) -> None:
+        if not self._table_has_column(conn, "entries", "scope_level"):
+            conn.execute(
+                "ALTER TABLE entries ADD COLUMN scope_level TEXT NOT NULL DEFAULT 'project'"
             )
 
     @staticmethod

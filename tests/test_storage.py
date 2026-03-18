@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
+
 import pytest
 
 from src.service.memory_service import ActorContext
+from src.storage.sqlite_store import SQLiteMemoryStore
 
 
 @pytest.mark.asyncio
@@ -67,3 +71,51 @@ async def test_scope_isolation(service):
 
     assert len(results_a) >= 1
     assert len(results_b) == 0
+
+
+def test_sqlite_store_migrates_legacy_entries_without_scope_level(tmp_path: Path):
+    db_path = tmp_path / "legacy-memory.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE entries (
+            id TEXT PRIMARY KEY,
+            tier TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            user_id TEXT,
+            agent_id TEXT,
+            visibility TEXT NOT NULL,
+            source TEXT NOT NULL,
+            type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            content TEXT NOT NULL,
+            context TEXT NOT NULL,
+            tags_json TEXT NOT NULL,
+            sensitivity_tags_json TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            embedding_version_id TEXT,
+            encrypted INTEGER NOT NULL DEFAULT 0,
+            redacted INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    SQLiteMemoryStore(db_path)
+
+    verify = sqlite3.connect(db_path)
+    verify.row_factory = sqlite3.Row
+    columns = {
+        row["name"]: row
+        for row in verify.execute("PRAGMA table_info(entries)").fetchall()
+    }
+    verify.close()
+
+    assert "scope_level" in columns
+    assert columns["scope_level"]["dflt_value"] == "'project'"
