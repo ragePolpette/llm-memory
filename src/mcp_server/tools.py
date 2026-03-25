@@ -7,7 +7,7 @@ from pathlib import Path
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
-from ..config import Tier
+from ..config import MemoryScope, Tier
 from ..service.memory_service import ActorContext, MemoryInputError, MemoryService
 
 
@@ -68,6 +68,138 @@ def _require_explicit_project_scope(name: str, arguments: dict, service: MemoryS
             "MEMORY_MULTI_PROJECT_ENABLED=true. Pass scope.project_id explicitly or choose "
             "scope.scope_level=workspace|global."
         )
+
+
+def _normalize_inference_scope(arguments: dict, service: MemoryService) -> tuple[str, dict]:
+    raw_scope = str(arguments.get("scope", "project")).strip().lower()
+    if raw_scope not in {"project", "global"}:
+        raise ValueError("scope must be 'project' or 'global'")
+    scope_payload = arguments.get("scope_ref")
+    scope_payload = scope_payload if isinstance(scope_payload, dict) else {}
+    project_id = str(arguments.get("project_id") or scope_payload.get("project_id") or "").strip()
+    if raw_scope == "project" and service.config.multi_project_enabled and not project_id:
+        raise ValueError(
+            "capture/search inference memory with scope=project requires project_id when "
+            "MEMORY_MULTI_PROJECT_ENABLED=true."
+        )
+    normalized_scope = {"scope_level": raw_scope}
+    if project_id:
+        normalized_scope["project_id"] = project_id
+    if scope_payload.get("workspace_id"):
+        normalized_scope["workspace_id"] = str(scope_payload["workspace_id"])
+    if scope_payload.get("user_id"):
+        normalized_scope["user_id"] = str(scope_payload["user_id"])
+    if scope_payload.get("agent_id"):
+        normalized_scope["agent_id"] = str(scope_payload["agent_id"])
+    return raw_scope, normalized_scope
+
+
+def _build_inference_capture_payload(arguments: dict, actor: ActorContext, service: MemoryService) -> dict:
+    scope_mode, scope = _normalize_inference_scope(arguments, service)
+    namespace = str(arguments["namespace"]).strip()
+    phase = str(arguments["phase"]).strip().lower()
+    product_target = str(arguments["product_target"]).strip()
+    repo_target = str(arguments["repo_target"]).strip()
+    tags = [str(tag).strip() for tag in arguments.get("tags", []) if str(tag).strip()]
+    metadata = dict(arguments.get("metadata") or {})
+    metadata.update(
+        {
+            "kind": "inference_memory",
+            "namespace": namespace,
+            "phase": phase,
+            "ticket_key": str(arguments.get("ticket_key", "")).strip() or None,
+            "product_target": product_target,
+            "repo_target": repo_target,
+            "scope_mode": scope_mode,
+        }
+    )
+    visibility = MemoryScope.GLOBAL.value if scope_mode == "global" else MemoryScope.SHARED.value
+    return {
+        "content": arguments["content"],
+        "context": arguments.get("context")
+        or (
+            f"Il progetto {product_target} richiede di conservare questa inferenza tecnica riusabile "
+            f"per la fase {phase} nel repo {repo_target}."
+        ),
+        "agent_id": actor.agent_id,
+        "user_id": actor.user_id,
+        "scope": scope,
+        "visibility": visibility,
+        "type": "fact",
+        "tier": "tier-1",
+        "source": "harness_inference",
+        "confidence": float(arguments.get("confidence", 0.7)),
+        "tags": sorted(set(tags + [namespace, phase, product_target, repo_target, "inference-memory"])),
+        "metadata": metadata,
+    }
+
+
+def _build_inference_search_plan(arguments: dict, service: MemoryService) -> tuple[str, dict]:
+    scope_mode, scope = _normalize_inference_scope(arguments, service)
+    product_target = str(arguments.get("product_target", "")).strip()
+    query = str(arguments["query"]).strip()
+    limit = int(arguments.get("limit", 10))
+    search_args = {
+        "query": query,
+        "limit": limit,
+        "include_invalidated": False,
+        "tier": None,
+        "include_project": scope_mode == "project",
+        "include_workspace": False,
+        "include_global": scope_mode == "global",
+    }
+    filters = {
+        "namespace": str(arguments["namespace"]).strip(),
+        "product_target": product_target,
+        "scope_mode": scope_mode,
+    }
+    return scope_mode, {"search_args": search_args, "filters": filters}
+
+
+def _actor_with_scope(actor: ActorContext, normalized_scope: dict) -> ActorContext:
+    return ActorContext(
+        agent_id=str(normalized_scope.get("agent_id") or actor.agent_id),
+        user_id=normalized_scope.get("user_id", actor.user_id),
+        workspace_id=str(normalized_scope.get("workspace_id") or actor.workspace_id),
+        project_id=str(normalized_scope.get("project_id") or actor.project_id),
+        writer_model=actor.writer_model,
+        writer_model_source=actor.writer_model_source,
+    )
+
+
+def _map_inference_bundles(
+    bundles: list, actor: ActorContext, memory_service: MemoryService, filters: dict
+) -> list[dict]:
+    items: list[dict] = []
+    namespace = filters["namespace"]
+    product_target = filters["product_target"]
+    for bundle in bundles:
+        entry = memory_service.get(bundle.entry_id, actor)
+        if entry is None:
+            continue
+        metadata = dict(entry.metadata or {})
+        if metadata.get("kind") != "inference_memory":
+            continue
+        if metadata.get("namespace") != namespace:
+            continue
+        if product_target and metadata.get("product_target") != product_target:
+            continue
+        items.append(
+            {
+                "memory_id": entry.id,
+                "content": entry.content,
+                "tags": entry.tags,
+                "confidence": entry.confidence,
+                "created_at": entry.created_at,
+                "updated_at": entry.updated_at,
+                "product_target": metadata.get("product_target"),
+                "repo_target": metadata.get("repo_target"),
+                "phase": metadata.get("phase"),
+                "ticket_key": metadata.get("ticket_key"),
+                "scope": metadata.get("scope_mode"),
+            }
+        )
+    return items
 
 
 def register_tools(server: Server, memory_service: MemoryService):
@@ -357,6 +489,63 @@ def register_tools(server: Server, memory_service: MemoryService):
                 },
             ),
             Tool(
+                name="capture_inference_memory",
+                description=(
+                    "Wrapper ergonomico per insight tecnici dell'harness. Salva una inferenza "
+                    "persistente con scope pubblico semplificato project|global; workspace resta interno."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "namespace": {"type": "string"},
+                        "phase": {"type": "string", "enum": ["triage", "execution"]},
+                        "ticket_key": {"type": "string"},
+                        "product_target": {"type": "string"},
+                        "repo_target": {"type": "string"},
+                        "content": {"type": "string"},
+                        "context": {"type": "string"},
+                        "confidence": {"type": "number"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "scope": {"type": "string", "enum": ["project", "global"], "default": "project"},
+                        "project_id": {"type": "string"},
+                        "scope_ref": {"type": "object"},
+                        "metadata": {"type": "object"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                    },
+                    "required": [
+                        "namespace",
+                        "phase",
+                        "product_target",
+                        "repo_target",
+                        "content",
+                        "agent_id",
+                    ],
+                },
+            ),
+            Tool(
+                name="search_inference_memory",
+                description=(
+                    "Ricerca insight tecnici persistiti dall'harness. Espone solo scope project|global "
+                    "e restituisce risultati pronti da consumare senza reinterpretare memory.search."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "namespace": {"type": "string"},
+                        "query": {"type": "string"},
+                        "product_target": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+                        "scope": {"type": "string", "enum": ["project", "global"], "default": "project"},
+                        "project_id": {"type": "string"},
+                        "scope_ref": {"type": "object"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                    },
+                    "required": ["namespace", "query", "agent_id"],
+                },
+            ),
+            Tool(
                 name="memory.invalidate",
                 description="Invalida memorie obsolete/errate con motivo e audit trail (v2)",
                 inputSchema={
@@ -459,6 +648,26 @@ def register_tools(server: Server, memory_service: MemoryService):
                     "capabilities": [
                         "list_projects/get_project_info/create_project/scope_overview/add/search/get/invalidate/promote/reembed/export/import"
                     ],
+                    "tool_map": {
+                        "generic": {
+                            "memory.about": "Guida server, boundary e scope hierarchy.",
+                            "memory.add": "Scrittura generica di memoria persistente.",
+                            "memory.search": "Ricerca generica sulle memorie persistenti.",
+                        },
+                        "harness": {
+                            "capture_inference_memory": (
+                                "Salva insight tecnici dell'harness con contract ridotto e scope pubblico project|global."
+                            ),
+                            "search_inference_memory": (
+                                "Ricerca insight tecnici dell'harness e restituisce item pronti da consumare."
+                            ),
+                        },
+                    },
+                    "harness_scope_guide": {
+                        "project": "Usa per conoscenza specifica di prodotto/repo corrente.",
+                        "global": "Usa per conoscenza trasversale non project-specific.",
+                        "workspace": "Interno al server; non esposto dal layer harness.",
+                    },
                     "boundaries": [
                         "Non salvare memorie di contesto temporaneo conversazionale",
                         "Non e' un indicizzatore di codice repository",
@@ -563,6 +772,30 @@ def register_tools(server: Server, memory_service: MemoryService):
                 include_global=bool(arguments.get("include_global", True)),
             )
             return _json_text({"api_version": "v2", "count": len(bundles), "bundles": [b.model_dump(mode="json") for b in bundles]})
+
+        if name == "capture_inference_memory":
+            payload = _build_inference_capture_payload(arguments, actor, memory_service)
+            try:
+                result = await memory_service.add(payload, actor, write_path="capture_inference_memory")
+            except MemoryInputError as exc:
+                raise ValueError(exc.to_json()) from exc
+            response = {
+                "api_version": "v2",
+                "stored": bool(result.get("success")),
+                "memory_id": result.get("entry_id"),
+            }
+            if not response["stored"]:
+                decision = result.get("decision") or {}
+                response["reason"] = decision.get("summary") or decision.get("category") or "rejected"
+            return _json_text(response)
+
+        if name == "search_inference_memory":
+            _, normalized_scope = _normalize_inference_scope(arguments, memory_service)
+            _, plan = _build_inference_search_plan(arguments, memory_service)
+            search_actor = _actor_with_scope(actor, normalized_scope)
+            bundles = await memory_service.search(actor=search_actor, **plan["search_args"])
+            items = _map_inference_bundles(bundles, search_actor, memory_service, plan["filters"])
+            return _json_text({"api_version": "v2", "count": len(items), "items": items})
 
         if name == "memory.get":
             entry = memory_service.get(arguments["entry_id"], actor)
