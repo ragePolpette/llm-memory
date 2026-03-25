@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..config import Config, MemoryScope, ScopeLevel, Tier
-from ..embedding.embedding_service import EmbeddingProvider
+from ..embedding.embedding_service import EmbeddingProvider, get_reembed_provider
 from ..models import (
     AuditEvent,
     EmbeddingVersion,
@@ -1341,20 +1341,30 @@ class MemoryService:
         activate: bool = True,
         batch_size: int = 64,
     ) -> ReembedResult:
-        # Versione embedding corrente provider + eventuale override model/dim a livello metadata.
-        base_model = model_id or self.embedding_provider.model_id()
-        base_dim = dim or self.embedding_provider.dimension()
+        reembed_provider = get_reembed_provider(
+            self.config,
+            self.embedding_provider,
+            model_id=model_id,
+            dim=dim,
+        )
+        await reembed_provider.prepare()
 
-        fingerprint = self.embedding_provider.fingerprint() + f"::{base_model}::{base_dim}"
-        version_id = f"{self.embedding_provider.provider_id()}::{base_model}::{fingerprint[:16]}"
+        base_model = reembed_provider.model_id()
+        base_dim = reembed_provider.dimension()
+        fingerprint = reembed_provider.fingerprint()
+        version_id = f"{reembed_provider.provider_id()}::{base_model}::{fingerprint[:16]}"
 
         version = EmbeddingVersion(
             version_id=version_id,
-            provider_id=self.embedding_provider.provider_id(),
+            provider_id=reembed_provider.provider_id(),
             embedding_model_id=base_model,
             dim=base_dim,
             fingerprint=fingerprint,
-            config={"requested_by": actor.agent_id},
+            config={
+                "requested_by": actor.agent_id,
+                "requested_model_id": model_id,
+                "requested_dim": dim,
+            },
             active=activate,
         )
         self.store.upsert_embedding_version(version, activate=activate)
@@ -1386,7 +1396,7 @@ class MemoryService:
                 else:
                     plaintexts.append(entry.content)
 
-            vectors = await self.embedding_provider.embed(plaintexts)
+            vectors = await reembed_provider.embed(plaintexts)
             now_iso = utc_now_iso()
             for index, entry in enumerate(pending):
                 vector = vectors[index] if index < len(vectors) else []
