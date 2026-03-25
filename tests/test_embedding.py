@@ -43,6 +43,34 @@ async def test_embedding_versioning_and_reembed(service):
     assert active.version_id == reembed_result.version_id
 
 
+@pytest.mark.asyncio
+async def test_reembed_uses_override_dimension_for_generated_vectors(service):
+    actor = ActorContext(agent_id="agent-embed", user_id="user-embed", workspace_id="ws-test", project_id="prj-test")
+
+    add_result = await service.add(
+        {
+            "content": "Decisione: usare storage locale e niente cloud.",
+            "context": "decision",
+            "agent_id": actor.agent_id,
+            "tier": "tier-2",
+            "type": "decision",
+            "visibility": "shared",
+        },
+        actor,
+    )
+
+    reembed_result = await service.reembed(actor=actor, dim=32, activate=True)
+
+    active = service.store.get_active_embedding_version()
+    assert active is not None
+    assert active.version_id == reembed_result.version_id
+    assert active.dim == 32
+
+    vector = service.store.get_embedding(add_result["entry_id"], reembed_result.version_id)
+    assert vector is not None
+    assert len(vector) == 32
+
+
 class _PartiallyFailingEmbeddingProvider(EmbeddingProvider):
     def __init__(self):
         self._dim = 4

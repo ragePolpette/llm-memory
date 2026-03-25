@@ -190,3 +190,31 @@ def get_embedding_provider(config: Config) -> EmbeddingProvider:
         )
 
     return HashEmbeddingProvider(model_name=config.embedding_model, dim=config.embedding_dim)
+
+
+def get_reembed_provider(
+    config: Config,
+    current_provider: EmbeddingProvider,
+    *,
+    model_id: Optional[str] = None,
+    dim: Optional[int] = None,
+) -> EmbeddingProvider:
+    """Resolve the provider used by `reembed`.
+
+    If no effective override is requested, reuse the current runtime provider.
+    Otherwise instantiate a provider from config with the requested overrides.
+    """
+
+    requested_model = model_id or current_provider.model_id()
+    requested_dim = dim or current_provider.dimension()
+
+    if requested_model == current_provider.model_id() and requested_dim == current_provider.dimension():
+        return current_provider
+
+    reembed_config = config.model_copy(
+        update={
+            "embedding_model": requested_model,
+            "embedding_dim": requested_dim,
+        }
+    )
+    return get_embedding_provider(reembed_config)
