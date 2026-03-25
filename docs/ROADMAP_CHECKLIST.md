@@ -44,7 +44,7 @@ An item is done only when:
 ## Baseline
 
 - [x] Initial audit completed on `2026-03-25`
-- [ ] Select first `P0` item and start implementation workflow
+- [x] Select first `P0` item and start implementation workflow
 
 ## Milestone 1: Portfolio-Ready Core
 
@@ -52,7 +52,7 @@ These items have the highest priority because they improve real quality and also
 
 - [ ] `P0` Fix Dockerfile build order and make image build consistent with the active runtime
 - [ ] `P0` Remove legacy LanceDB and stale env references from Docker/docs/quickstart
-- [ ] `P0` Fix `memory.reembed` so `model_id` and `dim` overrides are real, or remove the override contract
+- [x] `P0` Fix `memory.reembed` so `model_id` and `dim` overrides are real, or remove the override contract
 - [ ] `P0` Replace raw SQLite file copy export with a consistent backup/export approach compatible with WAL
 - [ ] `P0` Add GitHub Actions for tests and lint
 - [ ] `P0` Add a verified "golden path" quickstart: install, start, add, search, export, import
@@ -86,10 +86,10 @@ These items are intentionally lower priority. They matter if the tool starts bei
 ## Progress Log
 
 - [x] `2026-03-25` Created roadmap checklist from repo audit.
+- [x] `2026-03-25` Fix `memory.reembed` override contract - branch: `feature/fix-reembed-contract` - PR: `#9` - notes: `reembed` now resolves a provider coherent with requested overrides and regression coverage verifies generated vector dimension.
 
 ## Update Rule
 
 When an item is completed, append a short note in this format:
 
 - `[x] YYYY-MM-DD - item name - branch: feature/... - PR: ... - notes: ...`
-
