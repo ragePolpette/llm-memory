@@ -11,6 +11,7 @@ Documenti operativi:
 - `QUICKSTART.md`
 - `DOCKER_GUIDE.md`
 - `CONTRIBUTING.md`
+- `docs/QUALITY_GATE.md`
 - `docs/RELEASE_CHECKLIST.md`
 - `CHANGELOG.md`
 

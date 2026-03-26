@@ -68,7 +68,7 @@ These items matter once the repo is already coherent and usable.
 - [ ] `P1` Introduce explicit DB schema versioning and migrations
 - [x] `P1` Improve startup diagnostics and config validation
 - [x] `P1` Reduce broad `except Exception` handling where real error types should be preserved
-- [ ] `P1` Add coverage support and a documented quality gate
+- [x] `P1` Add coverage support and a documented quality gate
 - [ ] `P1` Add a local admin surface for audit inspection, either MCP read-only tool or CLI
 - [ ] `P2` Add benchmark scripts for search and reembed on realistic local datasets
 - [ ] `P2` Add maintenance utilities for cleanup, compaction, and backup verification
@@ -93,6 +93,7 @@ These items are intentionally lower priority. They matter if the tool starts bei
 - [x] `2026-03-26` Add release checklist for public-ready tagging - branch: `feature/release-checklist` - PR: `#13` - notes: Added a concrete release checklist, linked it from the docs surface, and introduced a minimal changelog file.
 - [x] `2026-03-26` Improve startup diagnostics and config validation - branch: `feature/startup-diagnostics-config-validation` - PR: `#14` - notes: Added stronger config validation, ensured runtime directories exist at startup, and exposed a reusable diagnostics summary in startup logs and HTTP health.
 - [x] `2026-03-26` Narrow broad exception handling around decrypt paths - branch: `feature/narrow-exception-handling` - PR: `#15` - notes: Introduced a typed decrypt error and replaced generic catches in the encrypted payload paths with explicit handling.
+- [x] `2026-03-26` Add coverage support and a documented quality gate - branch: `feature/coverage-quality-gate` - PR: `#16` - notes: Added coverage configuration, documented the local quality gate, and aligned release/dev docs with an explicit coverage command and threshold.
 
 ## Update Rule
 
