@@ -1,34 +1,31 @@
-version: '3.8'
-
 services:
   llm-memory:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: llm-memory-server
-    
-    # Variabili di ambiente (sovrascrivi quelle del Dockerfile)
+
     environment:
-      - MEMORY_STORAGE_DIR=/data/memories
-      - LANCEDB_DIR=/data/lancedb
-      - EMBEDDING_MODEL=intfloat/multilingual-e5-small
+      - MEMORY_STORAGE_BACKEND=sqlite
+      - MEMORY_VECTOR_BACKEND=sqlite
+      - MEMORY_SQLITE_PATH=/data/memory.db
+      - MEMORY_IMPORT_EXPORT_BASE_DIR=/data/exchange
+      - EMBEDDING_PROVIDER=hash-local
+      - EMBEDDING_MODEL=local-hash-v1
       - EMBEDDING_DIM=384
-      - INDEXING_MODE=sync
-      - HYBRID_THRESHOLD_BYTES=1024
-    
-    # Volume per persistenza dati
+      - MEMORY_ALLOW_OUTBOUND_NETWORK=false
+      - MCP_MEMORY_HOST=0.0.0.0
+      - MCP_MEMORY_PORT=8767
+      - MCP_MEMORY_SSE_ENABLED=false
+
     volumes:
       - ./data:/data
-      - ./logs:/data/logs
-    
-    # Restart policy
+
+    ports:
+      - "8767:8767"
+
     restart: unless-stopped
-    
-    # Stdin/stdout per MCP (importante!)
-    stdin_open: true
-    tty: true
-    
-    # Opzionale: limiti risorse
+
     deploy:
       resources:
         limits:
@@ -37,16 +34,3 @@ services:
         reservations:
           cpus: '1.0'
           memory: 2G
-    
-    # Opzionale: network (se in futuro serve comunicazione tra container)
-    # networks:
-    #   - llm-network
-
-# Opzionale: network personalizzato
-# networks:
-#   llm-network:
-#     driver: bridge
-
-# Volume nominato (alternativa a bind mount)
-# volumes:
-#   llm-data:

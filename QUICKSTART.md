@@ -1,101 +1,123 @@
-# Guida Rapida - LLM Memory
+# Guida Rapida - llm-memory v2
 
 ## 1. Installazione
 
 ```bash
 cd <project-root>\llm-memory
-
-# Installa dipendenze
 pip install -e .
-
-# Scarica il modello embedding in locale
-python scripts/download_model.py
 ```
+
+Il default e' `hash-local`, quindi non serve scaricare un modello esterno per iniziare.
 
 ## 2. Configurazione
 
-Il file `.env` è già configurato con i valori di default.
+```bash
+copy .env.example .env
+```
 
-## 3. Avvio Server MCP
+Default importanti:
+
+- `MEMORY_STORAGE_BACKEND=sqlite`
+- `MEMORY_VECTOR_BACKEND=sqlite`
+- `MEMORY_SQLITE_PATH=./data/memory.db`
+- `MEMORY_IMPORT_EXPORT_BASE_DIR=./data/exchange`
+- `EMBEDDING_PROVIDER=hash-local`
+
+## 3. Avvio Runtime
+
+### MCP stdio
 
 ```bash
 python -m src.mcp_server.server
 ```
 
-Il server è ora in ascolto su stdio per connessioni MCP.
-
-## 4. Test del Sistema
+### MCP HTTP locale
 
 ```bash
-# Esegui tutti i test
-pytest tests/ -v
-
-# Test specifici
-pytest tests/test_storage.py -v
-pytest tests/test_integration.py -v
+python -m src.mcp_server.http_server
 ```
 
-## 5. Uso da Agente AI
+Health check:
 
-Gli agenti possono connettersi al server MCP e usare i seguenti tools:
+```bash
+curl http://127.0.0.1:8767/health
+```
 
-### `memory_write`
+## 4. Test
+
+```bash
+pytest -q
+```
+
+## 5. Tool MCP Principali
+
+Tool di discovery e amministrazione:
+
+- `memory.about`
+- `memory.list_projects`
+- `memory.get_project_info`
+- `memory.create_project`
+- `memory.scope_overview`
+
+Tool operativi:
+
+- `memory.add`
+- `memory.search`
+- `memory.get`
+- `memory.invalidate`
+- `memory.promote`
+- `memory.reembed`
+- `memory.export`
+- `memory.import`
+
+## 6. Esempi Payload
+
+### `memory.add`
+
 ```json
 {
-  "content": "Contenuto della memoria",
-  "context": "contesto_semantico",
-  "agent_id": "agent-alpha",
-  "scope": "shared",
-  "tags": ["tag1", "tag2"]
+  "agent_id": "local-agent",
+  "content": "Il runtime usa SQLite come persistenza locale.",
+  "context": "architecture",
+  "type": "fact",
+  "tier": "tier-2",
+  "visibility": "shared"
 }
 ```
 
-### `memory_search`
+### `memory.search`
+
 ```json
 {
-  "query": "Cosa ricordi su Python?",
-  "agent_id": "agent-alpha",
-  "scope": "all",
-  "limit": 10
+  "agent_id": "local-agent",
+  "query": "persistenza locale sqlite",
+  "limit": 5,
+  "include_project": true,
+  "include_workspace": true,
+  "include_global": true
 }
 ```
 
-### `memory_read`
+### `memory.reembed`
+
 ```json
 {
-  "memory_id": "uuid-della-memoria",
-  "agent_id": "agent-alpha"
+  "agent_id": "local-agent",
+  "model_id": "local-hash-v2",
+  "dim": 384,
+  "activate": true
 }
 ```
 
-### `memory_list`
-```json
-{
-  "agent_id": "agent-alpha",
-  "scope": "shared",
-  "limit": 50
-}
-```
+## 7. Layout Dati
 
-## 6. Struttura Dati
+I dati principali vivono in:
 
-Le memorie vengono salvate in:
-- **Filesystem**: `./memories/` (Markdown con YAML frontmatter)
-- **Vector DB**: `./data/lancedb/` (indicizzazione semantica)
+- `./data/memory.db`
+- `./data/exchange/`
 
-## 7. Scopes
+Non c'e' piu un backend LanceDB o un filesystem markdown come runtime primario.
 
-- **private**: Solo l'agente proprietario può accedere
-- **shared**: Tutti gli agenti possono leggere/scrivere
-- **global**: Tutti possono leggere, nessuno può scrivere
+## 8. Docker
 
-## 8. Modalità Indicizzazione
-
-- **sync** (default): Indicizzazione immediata (~50-200ms)
-- **async**: Coda background (latenza 1-5 sec)
-- **hybrid**: Sync per contenuti <1KB, async per grandi
-
-Cambia in `.env`:
-```
-INDEXING_MODE=async
-```
+Per il runtime containerizzato usa la guida dedicata in `DOCKER_GUIDE.md`.
