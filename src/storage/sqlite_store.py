@@ -39,6 +39,20 @@ class SQLiteMemoryStore:
         finally:
             conn.close()
 
+    def backup_to(self, target_path: Path) -> None:
+        target = Path(target_path)
+        if target.exists():
+            target.unlink()
+
+        source_conn = sqlite3.connect(self.db_path)
+        target_conn = sqlite3.connect(target)
+        try:
+            source_conn.backup(target_conn)
+            target_conn.commit()
+        finally:
+            target_conn.close()
+            source_conn.close()
+
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
