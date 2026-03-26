@@ -43,6 +43,14 @@ Health check:
 curl http://127.0.0.1:8767/health
 ```
 
+Admin read-only locale:
+
+```bash
+curl http://127.0.0.1:8767/admin/summary
+curl "http://127.0.0.1:8767/admin/audit?limit=20"
+curl "http://127.0.0.1:8767/admin/projects?limit=20"
+```
+
 ## 4. Test
 
 ```bash
