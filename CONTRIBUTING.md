@@ -59,3 +59,4 @@ pytest tests/test_golden_path.py -q
 - prefer local-first defaults
 - avoid cloud assumptions in docs and examples
 - keep the MCP tool surface aligned with the runtime actually shipped in this repo
+- use `docs/RELEASE_CHECKLIST.md` when preparing a public-ready release
