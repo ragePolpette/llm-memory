@@ -69,6 +69,8 @@ config.local.*
 # Logs
 *.log
 logs/
+.coverage
+coverage.xml
 
 # OS
 .DS_Store

@@ -19,7 +19,9 @@ Use this before:
 
 ## Quality Gate
 
+- [ ] run `ruff check src tests`
 - [ ] run `pytest -q`
+- [ ] run `pytest --cov=src --cov-report=term-missing --cov-report=xml -q`
 - [ ] run `pytest tests/test_golden_path.py -q`
 - [ ] confirm Docker configuration is valid with `docker compose config`
 - [ ] verify the quickstart still matches the shipped runtime
