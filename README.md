@@ -11,6 +11,8 @@ Documenti operativi:
 - `QUICKSTART.md`
 - `DOCKER_GUIDE.md`
 - `CONTRIBUTING.md`
+- `docs/RELEASE_CHECKLIST.md`
+- `CHANGELOG.md`
 
 ## Obiettivi implementati
 
