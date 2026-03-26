@@ -8,7 +8,7 @@ The target is a serious single-user or small-team codebase, not a public SaaS.
 ## Local Setup
 
 ```bash
-pip install -e .
+pip install -e ".[dev]"
 copy .env.example .env
 pytest -q
 ```
@@ -34,10 +34,20 @@ Useful entrypoints:
 
 Before opening a PR:
 
+- run `ruff check src tests`
 - run `pytest -q`
+- run `pytest --cov=src --cov-report=term-missing --cov-report=xml -q`
 - update docs when behavior changes
 - keep changes scoped to one roadmap item or one coherent block
 - avoid introducing legacy config or outdated docs
+
+The documented local quality gate is:
+
+- `ruff check src tests`
+- `pytest -q`
+- `pytest --cov=src --cov-report=term-missing --cov-report=xml -q`
+
+Coverage is currently enforced at `82%` through project configuration in `pyproject.toml`.
 
 ## Golden Path
 
