@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class MemoryScope(str, Enum):
@@ -222,11 +222,94 @@ class Config(BaseModel):
 
     model_config = ConfigDict(use_enum_values=True)
 
+    @field_validator("embedding_model", "encryption_key_env", "default_workspace_id", "default_project_id")
+    @classmethod
+    def _non_empty_string(cls, value: str) -> str:
+        normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("must be a non-empty string")
+        return normalized
+
+    @field_validator("embedding_dim", "embedding_batch_size")
+    @classmethod
+    def _positive_int(cls, value: int) -> int:
+        if int(value) <= 0:
+            raise ValueError("must be greater than 0")
+        return int(value)
+
+    @field_validator("mcp_port")
+    @classmethod
+    def _valid_port(cls, value: int) -> int:
+        port = int(value)
+        if port < 1 or port > 65535:
+            raise ValueError("must be between 1 and 65535")
+        return port
+
+    @field_validator(
+        "dedup_semantic_threshold",
+        "ranking_similarity_weight",
+        "ranking_recency_weight",
+        "ranking_tier_weight",
+        "ranking_status_weight",
+    )
+    @classmethod
+    def _bounded_probability_like_value(cls, value: float) -> float:
+        number = float(value)
+        if number < 0.0 or number > 1.0:
+            raise ValueError("must be between 0.0 and 1.0")
+        return number
+
+    @field_validator("mcp_allowed_hosts", "mcp_allowed_origins")
+    @classmethod
+    def _non_empty_list(cls, value: list[str]) -> list[str]:
+        items = [str(item).strip() for item in value if str(item).strip()]
+        if not items:
+            raise ValueError("must contain at least one item")
+        return items
+
+    @model_validator(mode="after")
+    def _validate_ranking_weights(self) -> "Config":
+        total_weight = (
+            self.ranking_similarity_weight
+            + self.ranking_recency_weight
+            + self.ranking_tier_weight
+            + self.ranking_status_weight
+        )
+        if total_weight <= 0.0:
+            raise ValueError("ranking weights must have a total greater than 0")
+        return self
+
+    def ensure_runtime_dirs(self) -> None:
+        self.sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.import_export_base_dir.mkdir(parents=True, exist_ok=True)
+        self.mcp_models_dir.mkdir(parents=True, exist_ok=True)
+        self.hf_home.mkdir(parents=True, exist_ok=True)
+        self.transformers_cache.mkdir(parents=True, exist_ok=True)
+        self.sentence_transformers_home.mkdir(parents=True, exist_ok=True)
+
+    def startup_diagnostics(self) -> dict[str, object]:
+        return {
+            "sqlite_db": str(self.sqlite_db_path),
+            "import_export_base_dir": str(self.import_export_base_dir),
+            "embedding_provider": str(self.embedding_provider),
+            "embedding_model": self.embedding_model,
+            "embedding_dim": self.embedding_dim,
+            "transport": {
+                "host": self.mcp_host,
+                "port": self.mcp_port,
+                "sse_enabled": self.mcp_sse_enabled,
+            },
+            "multi_project_enabled": self.multi_project_enabled,
+            "self_eval_enforced": self.self_eval_enforced,
+            "allow_outbound_network": self.allow_outbound_network,
+        }
+
 
 def get_config() -> Config:
     """Crea e ritorna la configurazione dal environment."""
 
     config = Config()
+    config.ensure_runtime_dirs()
     os.environ.setdefault("MCP_MODELS_DIR", str(config.mcp_models_dir))
     os.environ.setdefault("HF_HOME", str(config.hf_home))
     os.environ.setdefault("TRANSFORMERS_CACHE", str(config.transformers_cache))
