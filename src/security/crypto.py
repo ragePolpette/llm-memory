@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import os
 from dataclasses import dataclass
@@ -10,6 +11,10 @@ from dataclasses import dataclass
 
 class EncryptionConfigurationError(RuntimeError):
     """Configurazione cifratura non valida."""
+
+
+class PayloadDecryptionError(RuntimeError):
+    """Payload cifrato non decifrabile con il cipher corrente."""
 
 
 @dataclass
@@ -64,7 +69,7 @@ class FernetCipher(PayloadCipher):
         if len(key_bytes) == 44:
             try:
                 decoded = base64.urlsafe_b64decode(key_bytes)
-            except Exception:
+            except (binascii.Error, ValueError):
                 decoded = b""
             if len(decoded) == 32:
                 return key_bytes
@@ -88,7 +93,12 @@ class FernetCipher(PayloadCipher):
         return CipherResult(payload=token.decode("utf-8"), encrypted=True)
 
     def decrypt(self, payload: str) -> str:
-        return self._fernet.decrypt(payload.encode("utf-8")).decode("utf-8")
+        from cryptography.fernet import InvalidToken
+
+        try:
+            return self._fernet.decrypt(payload.encode("utf-8")).decode("utf-8")
+        except InvalidToken as exc:
+            raise PayloadDecryptionError("Invalid encrypted payload.") from exc
 
 
 def build_cipher(enabled: bool, key_env: str) -> PayloadCipher:
