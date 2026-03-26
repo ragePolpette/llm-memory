@@ -1,53 +1,42 @@
-# Dockerfile per LLM Memory MCP Server
+# Docker image for the HTTP MCP runtime.
 FROM python:3.11-slim
 
-# Metadata
 LABEL maintainer="LLM Memory"
-LABEL description="Shared memory system for multi-agent AI with MCP server"
+LABEL description="Local-first MCP memory service with SQLite persistence"
 
-# Variabili di ambiente
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Directory di lavoro
 WORKDIR /app
 
-# Copia file di configurazione
-COPY pyproject.toml .
-COPY README.md .
-
-# Installa dipendenze
-RUN pip install --upgrade pip && \
-    pip install -e .
-
-# Copia il codice sorgente
+COPY pyproject.toml README.md ./
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 
-# Crea directory per dati persistenti
-RUN mkdir -p /data/memories /data/lancedb /data/logs
+RUN pip install --upgrade pip && \
+    pip install -e .
 
-# Pre-download del modello embedding (opzionale, commentato per build più veloce)
-# RUN python scripts/download_model.py
+RUN mkdir -p /data/exchange
 
-# Variabili di ambiente di default (possono essere sovrascritte)
-ENV MEMORY_STORAGE_DIR=/data/memories \
-    LANCEDB_DIR=/data/lancedb \
-    EMBEDDING_MODEL=intfloat/multilingual-e5-small \
+ENV MEMORY_STORAGE_BACKEND=sqlite \
+    MEMORY_VECTOR_BACKEND=sqlite \
+    MEMORY_SQLITE_PATH=/data/memory.db \
+    MEMORY_IMPORT_EXPORT_BASE_DIR=/data/exchange \
+    EMBEDDING_PROVIDER=hash-local \
+    EMBEDDING_MODEL=local-hash-v1 \
     EMBEDDING_DIM=384 \
-    INDEXING_MODE=sync
+    MEMORY_ALLOW_OUTBOUND_NETWORK=false \
+    MCP_MEMORY_HOST=0.0.0.0 \
+    MCP_MEMORY_PORT=8767 \
+    MCP_MEMORY_SSE_ENABLED=false
 
-# Espone porta per MCP (se in futuro si usa HTTP invece di stdio)
-# EXPOSE 8080
-
-# Volume per persistenza dati
 VOLUME ["/data"]
 
-# Health check (opzionale)
-# HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-#   CMD python -c "import sys; sys.exit(0)"
+EXPOSE 8767
 
-# Comando di avvio
-CMD ["python", "-m", "src.mcp_server.server"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD python -c "import json, urllib.request; data = json.load(urllib.request.urlopen('http://127.0.0.1:8767/health', timeout=5)); raise SystemExit(0 if data.get('status') == 'ok' else 1)"
+
+CMD ["python", "-m", "src.mcp_server.http_server"]
