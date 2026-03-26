@@ -66,7 +66,7 @@ These items matter once the repo is already coherent and usable.
 
 - [ ] `P1` Split `MemoryService` into smaller modules: write pipeline, retrieval, import/export, governance
 - [ ] `P1` Introduce explicit DB schema versioning and migrations
-- [ ] `P1` Improve startup diagnostics and config validation
+- [x] `P1` Improve startup diagnostics and config validation
 - [ ] `P1` Reduce broad `except Exception` handling where real error types should be preserved
 - [ ] `P1` Add coverage support and a documented quality gate
 - [ ] `P1` Add a local admin surface for audit inspection, either MCP read-only tool or CLI
@@ -91,6 +91,7 @@ These items are intentionally lower priority. They matter if the tool starts bei
 - [x] `2026-03-26` Replace raw SQLite export with backup API - branch: `feature/sqlite-export-backup` - PR: `#11` - notes: SQLite export now uses a consistent database backup instead of copying the raw database file while WAL is active.
 - [x] `2026-03-26` Verify and document the golden path, add license, and add contribution guide - branch: `feature/golden-path-license-dev-guide` - PR: `#12` - notes: Added a golden-path MCP tool test, refined quickstart examples, added MIT license, and documented the development workflow.
 - [x] `2026-03-26` Add release checklist for public-ready tagging - branch: `feature/release-checklist` - PR: `#13` - notes: Added a concrete release checklist, linked it from the docs surface, and introduced a minimal changelog file.
+- [x] `2026-03-26` Improve startup diagnostics and config validation - branch: `feature/startup-diagnostics-config-validation` - PR: `#14` - notes: Added stronger config validation, ensured runtime directories exist at startup, and exposed a reusable diagnostics summary in startup logs and HTTP health.
 
 ## Update Rule
 

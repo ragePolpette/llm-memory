@@ -240,6 +240,7 @@ def init_components() -> None:
             allowed_origins=config.mcp_allowed_origins,
         ),
     )
+    logger.info("LLM Memory HTTP runtime initialized", **config.startup_diagnostics())
 
 
 @asynccontextmanager
@@ -345,6 +346,7 @@ async def health(request: Request):
             "server": "llm-memory",
             "api": "v2",
             "mcp_sse_enabled": bool(getattr(app_config, "mcp_sse_enabled", False)),
+            "diagnostics": app_config.startup_diagnostics() if app_config is not None else None,
         }
     )
 
