@@ -33,13 +33,7 @@ class MemoryServer:
         self.runtime = build_runtime(config)
         self.server = Server("llm-memory")
         register_tools(self.server, self.runtime.service)
-        logger.info(
-            "LLM Memory runtime initialized",
-            sqlite_db=str(config.sqlite_db_path),
-            embedding_provider=str(config.embedding_provider),
-            embedding_model=config.embedding_model,
-            allow_outbound_network=config.allow_outbound_network,
-        )
+        logger.info("LLM Memory runtime initialized", **config.startup_diagnostics())
 
     async def run(self):
         await self.runtime.prewarm()
