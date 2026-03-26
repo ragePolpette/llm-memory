@@ -14,6 +14,8 @@ from src.mcp_server.http_server import (
     streamable_http_app,
     validateRequest,
 )
+from src.models import AuditEvent
+from src.service.memory_service import ActorContext
 
 
 @pytest.mark.asyncio
@@ -116,3 +118,100 @@ async def test_streamable_http_returns_structured_validation_error(monkeypatch):
             ],
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_admin_summary_exposes_local_runtime_state(monkeypatch, service):
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="prj-test")
+    service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
+    await service.add(
+        {
+            "content": "Il progetto mantiene audit trail locali per le operazioni di memoria.",
+            "context": "admin-summary",
+            "agent_id": actor.agent_id,
+            "visibility": "shared",
+        },
+        actor,
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+
+    response = await http_server.admin_summary(None)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["summary"]["counts"]["projects_total"] >= 2
+    assert payload["summary"]["counts"]["active_entries"] >= 1
+    assert payload["summary"]["counts"]["audit_events_total"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_admin_audit_supports_filters(monkeypatch, service):
+    service.store.add_audit(
+        AuditEvent(
+            action="export",
+            actor="agent-a",
+            reason="manual_export",
+            payload={"path": "one.jsonl"},
+        )
+    )
+    service.store.add_audit(
+        AuditEvent(
+            action="import",
+            actor="agent-b",
+            reason="manual_import",
+            payload={"path": "two.jsonl"},
+        )
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(query_params={"action": "import", "actor": "agent-b", "limit": "10"})
+
+    response = await http_server.admin_audit(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["audit"]["count"] == 1
+    assert payload["audit"]["items"][0]["action"] == "import"
+    assert payload["audit"]["items"][0]["actor"] == "agent-b"
+    assert "payload_preview" in payload["audit"]["items"][0]
+
+
+@pytest.mark.asyncio
+async def test_admin_audit_rejects_invalid_limit(monkeypatch, service):
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(query_params={"limit": "0"})
+
+    response = await http_server.admin_audit(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 400
+    assert payload["error"]["type"] == "bad_request"
+    assert "limit must be between" in payload["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_admin_projects_returns_entry_counts(monkeypatch, service):
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
+    service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
+    await service.add(
+        {
+            "content": "Project Alpha usa endpoint admin locali per audit e summary.",
+            "context": "admin-projects",
+            "agent_id": actor.agent_id,
+            "visibility": "shared",
+        },
+        actor,
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(query_params={"workspace_id": "ws-test", "limit": "20"})
+
+    response = await http_server.admin_projects(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    project = next(item for item in payload["projects"]["items"] if item["project_id"] == "project-alpha")
+    assert project["entry_count"] >= 1
+    assert project["active_entry_count"] >= 1

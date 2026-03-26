@@ -222,6 +222,140 @@ class MemoryService:
         )
         return project
 
+    @staticmethod
+    def _normalize_since_filter(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+        try:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("since must be a valid ISO 8601 timestamp") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
+
+    def admin_summary(self) -> dict[str, Any]:
+        active_version = self.store.get_active_embedding_version()
+        latest_audit = next((audit for audit in self.store.list_audit(limit=1)), None)
+        return {
+            "storage": {
+                "sqlite_db_path": str(self.config.sqlite_db_path),
+                "import_export_base_dir": str(self.config.import_export_base_dir),
+            },
+            "settings": {
+                "encryption_enabled": bool(self.config.encryption_enabled),
+                "multi_project_enabled": bool(self.config.multi_project_enabled),
+                "allow_outbound_network": bool(self.config.allow_outbound_network),
+            },
+            "counts": {
+                "entries_total": self.store.count_entries(),
+                "active_entries": self.store.count_entries(exclude_invalidated=True),
+                "invalidated_entries": self.store.count_entries(status=EntryStatus.INVALIDATED),
+                "invalidation_markers": self.store.count_entries(entry_type=EntryType.INVALIDATED),
+                "projects_total": len(self.store.list_projects()),
+                "audit_events_total": self.store.count_audit(),
+            },
+            "scopes": {
+                "project": self.store.count_entries(
+                    scope_level=ScopeLevel.PROJECT.value,
+                    exclude_invalidated=True,
+                ),
+                "workspace": self.store.count_entries(
+                    scope_level=ScopeLevel.WORKSPACE.value,
+                    exclude_invalidated=True,
+                ),
+                "global": self.store.count_entries(
+                    scope_level=ScopeLevel.GLOBAL.value,
+                    exclude_invalidated=True,
+                ),
+            },
+            "embedding": {
+                "active_version": active_version.model_dump(mode="json") if active_version else None,
+            },
+            "latest_audit_at": (
+                latest_audit.created_at.isoformat()
+                if latest_audit is not None and isinstance(latest_audit.created_at, datetime)
+                else (latest_audit.created_at if latest_audit is not None else None)
+            ),
+        }
+
+    def admin_list_audit(
+        self,
+        *,
+        limit: int = 100,
+        entry_id: Optional[str] = None,
+        action: Optional[str] = None,
+        actor: Optional[str] = None,
+        reason: Optional[str] = None,
+        since: Optional[str] = None,
+    ) -> dict[str, Any]:
+        clamped_limit = max(1, min(int(limit), 500))
+        normalized_since = self._normalize_since_filter(since)
+        audits = self.store.list_audit(
+            entry_id=entry_id,
+            limit=clamped_limit,
+            action=action,
+            actor=actor,
+            reason=reason,
+            since=normalized_since,
+        )
+        items = []
+        for audit in audits:
+            payload = audit.model_dump(mode="json")
+            payload["payload_preview"] = self._preview_text(
+                json.dumps(audit.payload, ensure_ascii=True, sort_keys=True),
+                limit=240,
+            )
+            items.append(payload)
+        return {
+            "count": len(items),
+            "limit": clamped_limit,
+            "filters": {
+                "entry_id": entry_id,
+                "action": action,
+                "actor": actor,
+                "reason": reason,
+                "since": normalized_since,
+            },
+            "items": items,
+        }
+
+    def admin_list_projects(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        clamped_limit = max(1, min(int(limit), 500))
+        projects = self.store.list_projects(workspace_id=workspace_id)[:clamped_limit]
+        items = []
+        for project in projects:
+            items.append(
+                {
+                    **project.model_dump(mode="json"),
+                    "entry_count": self.store.count_entries(
+                        workspace_id=project.workspace_id,
+                        project_id=project.project_id,
+                        scope_level=ScopeLevel.PROJECT.value,
+                    ),
+                    "active_entry_count": self.store.count_entries(
+                        workspace_id=project.workspace_id,
+                        project_id=project.project_id,
+                        scope_level=ScopeLevel.PROJECT.value,
+                        exclude_invalidated=True,
+                    ),
+                }
+            )
+        return {
+            "count": len(items),
+            "limit": clamped_limit,
+            "workspace_id": workspace_id,
+            "items": items,
+        }
+
     def _validate_write_payload(self, payload: dict[str, Any]) -> None:
         content = payload.get("content")
         if not isinstance(content, str) or not content.strip():

@@ -571,23 +571,123 @@ class SQLiteMemoryStore:
             )
             return int(cur.lastrowid)
 
-    def list_audit(self, entry_id: Optional[str] = None, limit: int = 200) -> list[AuditEvent]:
+    def count_entries(
+        self,
+        *,
+        status: EntryStatus | None = None,
+        entry_type: EntryType | None = None,
+        scope_level: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        exclude_invalidated: bool = False,
+    ) -> int:
+        sql = ["SELECT COUNT(1) AS c FROM entries WHERE 1 = 1"]
+        params: list[object] = []
+
+        if workspace_id is not None:
+            sql.append("AND workspace_id = ?")
+            params.append(workspace_id)
+
+        if project_id is not None:
+            sql.append("AND project_id = ?")
+            params.append(project_id)
+
+        if scope_level is not None:
+            sql.append("AND scope_level = ?")
+            params.append(scope_level)
+
+        if status is not None:
+            sql.append("AND status = ?")
+            params.append(status.value)
+
+        if entry_type is not None:
+            sql.append("AND type = ?")
+            params.append(entry_type.value)
+
+        if exclude_invalidated:
+            sql.append("AND status != ?")
+            params.append(EntryStatus.INVALIDATED.value)
+            sql.append("AND type != ?")
+            params.append(EntryType.INVALIDATED.value)
+
         with self._conn() as conn:
-            if entry_id:
-                rows = conn.execute(
-                    """
-                    SELECT * FROM audit_log
-                    WHERE entry_id = ?
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                    """,
-                    (entry_id, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ?",
-                    (limit,),
-                ).fetchall()
+            row = conn.execute(" ".join(sql), params).fetchone()
+            return int(row["c"] if row else 0)
+
+    def count_audit(
+        self,
+        *,
+        entry_id: Optional[str] = None,
+        action: Optional[str] = None,
+        actor: Optional[str] = None,
+        reason: Optional[str] = None,
+        since: Optional[str] = None,
+    ) -> int:
+        sql = ["SELECT COUNT(1) AS c FROM audit_log WHERE 1 = 1"]
+        params: list[object] = []
+
+        if entry_id:
+            sql.append("AND entry_id = ?")
+            params.append(entry_id)
+
+        if action:
+            sql.append("AND action = ?")
+            params.append(action)
+
+        if actor:
+            sql.append("AND actor = ?")
+            params.append(actor)
+
+        if reason:
+            sql.append("AND reason = ?")
+            params.append(reason)
+
+        if since:
+            sql.append("AND created_at >= ?")
+            params.append(since)
+
+        with self._conn() as conn:
+            row = conn.execute(" ".join(sql), params).fetchone()
+            return int(row["c"] if row else 0)
+
+    def list_audit(
+        self,
+        entry_id: Optional[str] = None,
+        limit: int = 200,
+        *,
+        action: Optional[str] = None,
+        actor: Optional[str] = None,
+        reason: Optional[str] = None,
+        since: Optional[str] = None,
+    ) -> list[AuditEvent]:
+        sql = ["SELECT * FROM audit_log WHERE 1 = 1"]
+        params: list[object] = []
+
+        if entry_id:
+            sql.append("AND entry_id = ?")
+            params.append(entry_id)
+
+        if action:
+            sql.append("AND action = ?")
+            params.append(action)
+
+        if actor:
+            sql.append("AND actor = ?")
+            params.append(actor)
+
+        if reason:
+            sql.append("AND reason = ?")
+            params.append(reason)
+
+        if since:
+            sql.append("AND created_at >= ?")
+            params.append(since)
+
+        sql.append("ORDER BY created_at DESC LIMIT ?")
+        params.append(limit)
+
+        with self._conn() as conn:
+            rows = conn.execute(" ".join(sql), params).fetchall()
 
             return [
                 AuditEvent(
