@@ -6,6 +6,12 @@ Il runtime locale, quando deployato, resta in `Binah\llm-memory`.
 Memoria RAG locale per MCP con architettura a tier, governance e audit trail. Nessun servizio cloud richiesto.
 Questo MCP e' dedicato a memorie operative persistenti (non al retrieval di contesto codice repository).
 
+Documenti operativi:
+
+- `QUICKSTART.md`
+- `DOCKER_GUIDE.md`
+- `CONTRIBUTING.md`
+
 ## Obiettivi implementati
 
 - Tiering: `tier-1` (sessione), `tier-2` (progetto), `tier-3` (long-term curato)
