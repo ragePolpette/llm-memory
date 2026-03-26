@@ -50,8 +50,8 @@ An item is done only when:
 
 These items have the highest priority because they improve real quality and also how the repo looks to an external reviewer.
 
-- [ ] `P0` Fix Dockerfile build order and make image build consistent with the active runtime
-- [ ] `P0` Remove legacy LanceDB and stale env references from Docker/docs/quickstart
+- [x] `P0` Fix Dockerfile build order and make image build consistent with the active runtime
+- [x] `P0` Remove legacy LanceDB and stale env references from Docker/docs/quickstart
 - [x] `P0` Fix `memory.reembed` so `model_id` and `dim` overrides are real, or remove the override contract
 - [ ] `P0` Replace raw SQLite file copy export with a consistent backup/export approach compatible with WAL
 - [ ] `P0` Add GitHub Actions for tests and lint
@@ -87,6 +87,7 @@ These items are intentionally lower priority. They matter if the tool starts bei
 
 - [x] `2026-03-25` Created roadmap checklist from repo audit.
 - [x] `2026-03-25` Fix `memory.reembed` override contract - branch: `feature/fix-reembed-contract` - PR: `#9` - notes: `reembed` now resolves a provider coherent with requested overrides and regression coverage verifies generated vector dimension.
+- [x] `2026-03-26` Align Docker setup and runtime docs - branch: `feature/docker-docs-runtime-alignment` - PR: `#10` - notes: Docker now starts the HTTP MCP runtime and the Docker/quickstart docs no longer reference LanceDB or obsolete tool names.
 
 ## Update Rule
 
