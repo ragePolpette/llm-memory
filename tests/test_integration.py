@@ -9,6 +9,7 @@ import pytest
 
 from src.config import MemoryScope, Tier
 from src.models import EntryType, MemoryEntry
+from src.security.crypto import PayloadDecryptionError
 from src.service.memory_service import ActorContext
 
 
@@ -244,3 +245,25 @@ async def test_import_rejects_paths_outside_exchange_base(service, tmp_path: Pat
 
     with pytest.raises(ValueError, match="escapes configured import/export base directory"):
         await service.import_data(outside_path, "jsonl", actor)
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_encrypted_entry_with_specific_decrypt_error(service):
+    actor = ActorContext(agent_id="agent-enc", user_id="user-enc", workspace_id="ws-test", project_id="prj-test")
+
+    jsonl_path = service.config.import_export_base_dir / "memory-encrypted.jsonl"
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    jsonl_path.write_text(
+        '{"id":"e-enc","tier":"tier-2","scope":{"workspace_id":"ws-test","project_id":"prj-test","user_id":"user-enc","agent_id":"agent-enc"},"visibility":"shared","source":"test","type":"fact","status":"active","content":"ciphertext","context":"import","tags":[],"sensitivity_tags":[],"metadata":{},"links":[],"confidence":0.7,"created_at":"2026-01-01T00:00:00+00:00","updated_at":"2026-01-01T00:00:00+00:00","content_hash":"enc","embedding_version_id":null,"encrypted":true,"redacted":false}\n',
+        encoding="utf-8",
+    )
+
+    def _raise_decrypt_error(payload: str) -> str:
+        raise PayloadDecryptionError("boom")
+
+    service.cipher.decrypt = _raise_decrypt_error  # type: ignore[method-assign]
+
+    result = await service.import_data(jsonl_path, "jsonl", actor)
+
+    assert result.imported == 0
+    assert result.rejected == 1

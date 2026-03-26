@@ -26,7 +26,7 @@ from ..models import (
     ScopeRef,
     compute_content_hash,
 )
-from ..security.crypto import PayloadCipher
+from ..security.crypto import PayloadCipher, PayloadDecryptionError
 from ..security.privacy import PrivacyPolicy
 from ..storage.sqlite_store import SQLiteMemoryStore
 from ..vectordb.sqlite_vector_store import SQLiteVectorStore
@@ -590,7 +590,7 @@ class MemoryService:
         if entry.encrypted:
             try:
                 content = self.cipher.decrypt(entry.content)
-            except Exception:
+            except PayloadDecryptionError:
                 content = "[ENCRYPTED]"
         return content[:max_chars]
 
@@ -1388,7 +1388,7 @@ class MemoryService:
                 if entry.encrypted:
                     try:
                         plaintexts.append(self.cipher.decrypt(entry.content))
-                    except Exception:
+                    except PayloadDecryptionError:
                         plaintexts.append("")
                         skipped += 1
                         failed_entry_ids.add(entry.id)
@@ -1525,7 +1525,7 @@ class MemoryService:
             if entry.encrypted:
                 try:
                     import_payload["content"] = self.cipher.decrypt(entry.content)
-                except Exception:
+                except PayloadDecryptionError:
                     rejected += 1
                     self.store.add_audit(
                         AuditEvent(
