@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1465,7 +1464,7 @@ class MemoryService:
             count = len(entries)
 
         elif fmt == "sqlite":
-            shutil.copy2(self.store.db_path, resolved_path)
+            self.store.backup_to(resolved_path)
             count = len(entries)
 
         else:
