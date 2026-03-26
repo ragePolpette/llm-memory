@@ -15,6 +15,13 @@ Documenti operativi:
 - `docs/RELEASE_CHECKLIST.md`
 - `CHANGELOG.md`
 
+Surface HTTP locali di amministrazione:
+
+- `GET /health`
+- `GET /admin/summary`
+- `GET /admin/audit`
+- `GET /admin/projects`
+
 ## Obiettivi implementati
 
 - Tiering: `tier-1` (sessione), `tier-2` (progetto), `tier-3` (long-term curato)
