@@ -55,9 +55,9 @@ These items have the highest priority because they improve real quality and also
 - [x] `P0` Fix `memory.reembed` so `model_id` and `dim` overrides are real, or remove the override contract
 - [x] `P0` Replace raw SQLite file copy export with a consistent backup/export approach compatible with WAL
 - [ ] `P0` Add GitHub Actions for tests and lint
-- [ ] `P0` Add a verified "golden path" quickstart: install, start, add, search, export, import
-- [ ] `P1` Add a project license before public GitHub publication
-- [ ] `P1` Add a concise contribution/development guide for local workflow
+- [x] `P0` Add a verified "golden path" quickstart: install, start, add, search, export, import
+- [x] `P1` Add a project license before public GitHub publication
+- [x] `P1` Add a concise contribution/development guide for local workflow
 - [ ] `P1` Add a release checklist for tagging a public-ready version
 
 ## Milestone 2: Team-Ready Maintainability
@@ -89,6 +89,7 @@ These items are intentionally lower priority. They matter if the tool starts bei
 - [x] `2026-03-25` Fix `memory.reembed` override contract - branch: `feature/fix-reembed-contract` - PR: `#9` - notes: `reembed` now resolves a provider coherent with requested overrides and regression coverage verifies generated vector dimension.
 - [x] `2026-03-26` Align Docker setup and runtime docs - branch: `feature/docker-docs-runtime-alignment` - PR: `#10` - notes: Docker now starts the HTTP MCP runtime and the Docker/quickstart docs no longer reference LanceDB or obsolete tool names.
 - [x] `2026-03-26` Replace raw SQLite export with backup API - branch: `feature/sqlite-export-backup` - PR: `#11` - notes: SQLite export now uses a consistent database backup instead of copying the raw database file while WAL is active.
+- [x] `2026-03-26` Verify and document the golden path, add license, and add contribution guide - branch: `feature/golden-path-license-dev-guide` - PR: `#12` - notes: Added a golden-path MCP tool test, refined quickstart examples, added MIT license, and documented the development workflow.
 
 ## Update Rule
 

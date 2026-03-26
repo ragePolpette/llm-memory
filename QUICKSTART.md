@@ -49,6 +49,12 @@ curl http://127.0.0.1:8767/health
 pytest -q
 ```
 
+Golden path verificato:
+
+```bash
+pytest tests/test_golden_path.py -q
+```
+
 ## 5. Tool MCP Principali
 
 Tool di discovery e amministrazione:
@@ -98,6 +104,26 @@ Tool operativi:
 }
 ```
 
+### `memory.export`
+
+```json
+{
+  "agent_id": "local-agent",
+  "path": "golden-path.jsonl",
+  "format": "jsonl"
+}
+```
+
+### `memory.import`
+
+```json
+{
+  "agent_id": "local-agent",
+  "path": "golden-path.jsonl",
+  "format": "jsonl"
+}
+```
+
 ### `memory.reembed`
 
 ```json
@@ -121,3 +147,7 @@ Non c'e' piu un backend LanceDB o un filesystem markdown come runtime primario.
 ## 8. Docker
 
 Per il runtime containerizzato usa la guida dedicata in `DOCKER_GUIDE.md`.
+
+## 9. Development Workflow
+
+Per il workflow di sviluppo e contribution usa `CONTRIBUTING.md`.
