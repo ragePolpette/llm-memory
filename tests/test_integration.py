@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -64,6 +65,38 @@ async def test_import_export_memory_md_deterministic(service, tmp_path: Path):
     exported_twice = md_path.read_text(encoding="utf-8")
 
     assert exported_once == exported_twice
+
+
+@pytest.mark.asyncio
+async def test_export_sqlite_uses_consistent_backup(service):
+    actor = ActorContext(agent_id="agent-sqlite", user_id="user-sqlite", workspace_id="ws-test", project_id="prj-test")
+
+    await service.add(
+        {
+            "content": "Il backup sqlite esportato deve essere consistente anche con WAL attivo.",
+            "context": "backup",
+            "agent_id": actor.agent_id,
+            "tier": "tier-2",
+            "type": "fact",
+            "visibility": "shared",
+        },
+        actor,
+    )
+
+    sqlite_path = service.config.import_export_base_dir / "backup.sqlite"
+    export_result = service.export_data(sqlite_path, "sqlite", actor)
+
+    assert export_result.count >= 1
+    assert sqlite_path.exists()
+
+    conn = sqlite3.connect(sqlite_path)
+    try:
+        row = conn.execute("SELECT COUNT(1) FROM entries").fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert int(row[0]) >= 1
 
 
 @pytest.mark.asyncio
