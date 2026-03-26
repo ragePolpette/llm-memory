@@ -69,7 +69,7 @@ These items matter once the repo is already coherent and usable.
 - [x] `P1` Improve startup diagnostics and config validation
 - [x] `P1` Reduce broad `except Exception` handling where real error types should be preserved
 - [x] `P1` Add coverage support and a documented quality gate
-- [ ] `P1` Add a local admin surface for audit inspection, either MCP read-only tool or CLI
+- [x] `P1` Add a local admin surface for audit inspection, either MCP read-only tool or CLI
 - [ ] `P2` Add benchmark scripts for search and reembed on realistic local datasets
 - [ ] `P2` Add maintenance utilities for cleanup, compaction, and backup verification
 
@@ -94,6 +94,7 @@ These items are intentionally lower priority. They matter if the tool starts bei
 - [x] `2026-03-26` Improve startup diagnostics and config validation - branch: `feature/startup-diagnostics-config-validation` - PR: `#14` - notes: Added stronger config validation, ensured runtime directories exist at startup, and exposed a reusable diagnostics summary in startup logs and HTTP health.
 - [x] `2026-03-26` Narrow broad exception handling around decrypt paths - branch: `feature/narrow-exception-handling` - PR: `#15` - notes: Introduced a typed decrypt error and replaced generic catches in the encrypted payload paths with explicit handling.
 - [x] `2026-03-26` Add coverage support and a documented quality gate - branch: `feature/coverage-quality-gate` - PR: `#16` - notes: Added coverage configuration, documented the local quality gate, and aligned release/dev docs with an explicit coverage command and threshold.
+- [x] `2026-03-26` Add local admin HTTP surface for audit inspection - branch: `feature/memory-admin-http-surface` - PR: `#17` - notes: Added read-only HTTP admin endpoints for summary, audit, and projects, with filtered audit queries and route-level test coverage.
 
 ## Update Rule
 

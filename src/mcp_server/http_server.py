@@ -178,6 +178,28 @@ def _validation_error_response(errors: list[ValidationError]) -> JSONResponse:
     )
 
 
+def _admin_bad_request(message: str) -> JSONResponse:
+    return JSONResponse(
+        {
+            "status": "error",
+            "error": {
+                "type": "bad_request",
+                "message": message,
+            },
+        },
+        status_code=400,
+    )
+
+
+def _parse_limit(raw_value: str | None, *, default: int = 100, minimum: int = 1, maximum: int = 500) -> int:
+    if raw_value is None or not str(raw_value).strip():
+        return default
+    limit = int(str(raw_value).strip())
+    if limit < minimum or limit > maximum:
+        raise ValueError(f"limit must be between {minimum} and {maximum}")
+    return limit
+
+
 async def _read_request_body(receive: Receive) -> tuple[bytes, list[dict[str, Any]]]:
     messages: list[dict[str, Any]] = []
     body_chunks: list[bytes] = []
@@ -351,8 +373,70 @@ async def health(request: Request):
     )
 
 
+async def admin_summary(request: Request):
+    if runtime is None:
+        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "llm-memory",
+            "api": "v2",
+            "summary": runtime.service.admin_summary(),
+        }
+    )
+
+
+async def admin_audit(request: Request):
+    if runtime is None:
+        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+    try:
+        limit = _parse_limit(request.query_params.get("limit"), default=100)
+        payload = runtime.service.admin_list_audit(
+            limit=limit,
+            entry_id=request.query_params.get("entry_id"),
+            action=request.query_params.get("action"),
+            actor=request.query_params.get("actor"),
+            reason=request.query_params.get("reason"),
+            since=request.query_params.get("since"),
+        )
+    except ValueError as exc:
+        return _admin_bad_request(str(exc))
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "llm-memory",
+            "api": "v2",
+            "audit": payload,
+        }
+    )
+
+
+async def admin_projects(request: Request):
+    if runtime is None:
+        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+    try:
+        limit = _parse_limit(request.query_params.get("limit"), default=200)
+        payload = runtime.service.admin_list_projects(
+            workspace_id=request.query_params.get("workspace_id"),
+            limit=limit,
+        )
+    except ValueError as exc:
+        return _admin_bad_request(str(exc))
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "llm-memory",
+            "api": "v2",
+            "projects": payload,
+        }
+    )
+
+
 routes = [
     Route("/health", health, methods=["GET"]),
+    Route("/admin/summary", admin_summary, methods=["GET"]),
+    Route("/admin/audit", admin_audit, methods=["GET"]),
+    Route("/admin/projects", admin_projects, methods=["GET"]),
     Route("/mcp", endpoint=streamable_http_app, methods=["GET", "POST", "DELETE"]),
     Route("/sse", sse_legacy_endpoint, methods=["GET"]),
     Mount("/messages/", app=legacy_messages_app),
