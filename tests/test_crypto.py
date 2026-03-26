@@ -5,7 +5,7 @@ from os import urandom
 
 import pytest
 
-from src.security.crypto import EncryptionConfigurationError, FernetCipher
+from src.security.crypto import EncryptionConfigurationError, FernetCipher, PayloadDecryptionError
 
 
 def test_fernet_cipher_rejects_short_passphrases():
@@ -31,3 +31,12 @@ def test_fernet_cipher_accepts_valid_fernet_key_verbatim():
     encrypted = cipher.encrypt("payload")
 
     assert cipher.decrypt(encrypted.payload) == "payload"
+
+
+def test_fernet_cipher_raises_specific_error_for_invalid_payload():
+    pytest.importorskip("cryptography.fernet")
+
+    cipher = FernetCipher("x" * 32)
+
+    with pytest.raises(PayloadDecryptionError, match="Invalid encrypted payload"):
+        cipher.decrypt("not-a-valid-token")
