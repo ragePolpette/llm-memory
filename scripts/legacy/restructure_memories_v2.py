@@ -79,7 +79,7 @@ TECHNICAL_PATTERNS = [
     r"\bconfigsessione\b",
     r"\bcomponent\b",
     r"\bmodal\b",
-    r"\bbpopilot\b",
+    r"\blegacy-app\b",
     r"\bdev[a-z]*-\d+\b",
 ]
 
