@@ -39,7 +39,7 @@ async def test_capture_and_search_inference_memory_project_scope(runtime):
                     "phase": "triage",
                     "ticket_key": "BPO-101",
                     "product_target": "legacy",
-                    "repo_target": "bpopilot",
+                    "repo_target": "legacy-app",
                     "content": "La logica ordini vive nel controller storico e nel relativo service.",
                     "tags": ["orders", "mapping"],
                     "scope": "project",
