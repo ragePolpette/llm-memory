@@ -5,7 +5,7 @@
 Extend `llm-memory` from a single durable-memory plane into a two-layer system:
 
 - structured memory: dense, reusable, governed knowledge
-- raw memory: noisy episodic material for later analysis and distillation
+- fast memory: noisy episodic material for later analysis and distillation
 
 The intent is to preserve the current quality bar of the strong memory path while
 adding a safe place for operational residue, attempts, fixes, and repeated issues.
@@ -29,7 +29,7 @@ storage and workflow boundary between:
 Keep both entry points.
 
 - direct structured write stays available for high-confidence reusable knowledge
-- raw write becomes a separate path for low-confidence, messy, or transient material
+- fast write becomes a separate path for low-confidence, messy, or transient material
 
 Do not force everything through batch distillation.
 
@@ -52,19 +52,19 @@ It should continue to store only:
 
 This is the retrieval layer.
 
-### 2. Raw memory becomes a separate layer
+### 2. Fast memory becomes a separate layer
 
 Do not overload `MemoryEntry` with an `episodic` flag.
 Do not store raw notes in the same retrieval table.
 
 Recommended approach:
 
-- add a separate raw-memory model
+- add a separate fast-memory model
 - add a separate SQLite table
 - add separate CRUD/query methods in the store
 - keep it out of semantic retrieval by default
 
-Raw memory should hold:
+Fast memory should hold:
 
 - "today X happened"
 - fix attempts
@@ -94,7 +94,7 @@ Initial implementation should be deterministic-first:
 
 LLM-based distillation can sit on top of that, not replace it.
 
-### 4. Router integration comes after raw-memory exists
+### 4. Router integration comes after fast-memory exists
 
 The router concept fits well, but should be added after the raw layer exists.
 
@@ -120,7 +120,7 @@ not in the current direct-write path alone.
 Recommended interpretation:
 
 - static importance remains the first signal for `memory.add`
-- recurrence becomes a promotion signal for raw memory
+- recurrence becomes a promotion signal for fast memory
 - low static importance plus repeated recurrence should raise review priority
 - recurrence should be damped when repetition looks loop-like or low-diversity
 
@@ -129,7 +129,7 @@ keep returning.
 
 ## Suggested Data Model
 
-Introduce a new raw record model, separate from `MemoryEntry`.
+Introduce a new fast-memory record model, separate from `MemoryEntry`.
 
 Suggested fields:
 
@@ -166,12 +166,12 @@ Suggested distillation metadata:
 Phase 1:
 
 - `memory.add` remains the strong-memory write path
-- add `memory.log_raw`
-- add admin read-only endpoints for raw-memory counts and recent events
+- add `memory.log_fast`
+- add admin read-only endpoints for fast-memory counts and recent events
 
 Phase 2:
 
-- add `memory.distill_raw` for local manual runs
+- add `memory.distill_fast` for local manual runs
 - add CLI support for scheduled distillation
 - add admin visibility for distillation candidates and outcomes
 
@@ -182,10 +182,10 @@ Phase 3:
 
 ## Suggested Rollout
 
-### Phase A: Raw Memory Foundation
+### Phase A: Fast Memory Foundation
 
-- define raw-memory model and store
-- add raw-memory write API
+- define fast-memory model and store
+- add fast-memory write API
 - add tests and local admin visibility
 
 ### Phase B: Distillation Pipeline
@@ -196,8 +196,8 @@ Phase 3:
 
 ### Phase C: Structured Promotion
 
-- emit structured candidates from raw clusters
-- preserve links from promoted structured records back to raw evidence
+- emit structured candidates from fast-memory clusters
+- preserve links from promoted structured records back to fast-memory evidence
 - record audit events for every distillation outcome
 
 ### Phase D: Router
@@ -210,7 +210,7 @@ Phase 3:
 
 - editing model weights directly
 - replacing the current structured-memory path
-- making raw memory searchable in the main semantic retrieval flow
+- making fast memory searchable in the main semantic retrieval flow
 - fully autonomous distillation without visibility or auditability
 
 ## Why This Fits The Repo
@@ -225,5 +225,5 @@ This direction strengthens the original product thesis:
 In short:
 
 - structured memory remains clean
-- raw memory absorbs the mess
+- fast memory absorbs the mess
 - distillation turns repetition into knowledge
