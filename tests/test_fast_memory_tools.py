@@ -95,6 +95,55 @@ async def test_get_fast_memory_tool_returns_entry(runtime):
 
 
 @pytest.mark.asyncio
+async def test_log_fast_memory_tool_accepts_structured_metadata(runtime):
+    server = Server("llm-memory-fast-tools")
+    register_tools(server, runtime.service)
+    handler = server.request_handlers[CallToolRequest]
+
+    log_result = await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.log_fast",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "content": "L'utente y vedeva solo il menu x.",
+                    "event_type": "incident",
+                    "kind": "bug",
+                    "product_area": "authorization",
+                    "component": "menu-engine",
+                    "entity_refs": ["user:y", "menu:x"],
+                    "action_taken": "Update tabella permessi utente.",
+                    "outcome": "Menu ripristinati.",
+                    "generalizable": "yes",
+                    "commands": ["sqlcmd -i perm_fix.sql"],
+                },
+            }
+        )
+    )
+    log_payload = _tool_payload(log_result)
+
+    get_result = await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.get_fast",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "entry_id": log_payload["entry_id"],
+                },
+            }
+        )
+    )
+    get_payload = _tool_payload(get_result)
+    structured = get_payload["entry"]["metadata"]["structured_context"]
+
+    assert structured["kind"] == "bug"
+    assert structured["product_area"] == "authorization"
+    assert structured["component"] == "menu-engine"
+    assert structured["entity_refs"] == ["user:y", "menu:x"]
+    assert structured["generalizable"] == "yes"
+
+
+@pytest.mark.asyncio
 async def test_log_fast_tool_returns_json_validation_error(runtime):
     server = Server("llm-memory-fast-tools")
     register_tools(server, runtime.service)

@@ -100,6 +100,61 @@ def test_log_fast_computes_higher_score_for_recurrent_cross_session_pattern(serv
     assert recurrent_entry.metadata["fast_memory_scoring"]["recurrence_boost"] > 0.0
 
 
+def test_log_fast_normalizes_structured_metadata(service):
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+
+    result = service.log_fast(
+        {
+            "content": "L'utente y vedeva solo il menu x.",
+            "context": "menu troubleshooting",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "kind": "bug",
+            "product_area": "authorization",
+            "component": "menu-engine",
+            "feature": "dynamic-menu",
+            "entity_refs": ["user:y", "menu:x", "user:y"],
+            "symptoms": ["utente vede solo menu x", "permessi incompleti"],
+            "action_taken": "Update sulla tabella dei permessi utente.",
+            "outcome": "Menu corretti dopo refresh autorizzazioni.",
+            "root_cause_hypothesis": "Join incompleto tra profilo utente e permessi menu.",
+            "resolution_confidence": 0.92,
+            "generalizable": "yes",
+            "evidence_refs": ["ticket:AUTH-17", "sql:perm-fix-1"],
+            "sql_patch": "update table t set ... where utente = 'y'",
+            "commands": ["sqlcmd -i perm_fix.sql", "refresh-menu-cache"],
+            "observed_by": "support",
+            "affected_user_scope": "single-user",
+        },
+        actor,
+    )
+
+    entry = service.get_fast(result["entry_id"], actor)
+    assert entry is not None
+    structured = entry.metadata["structured_context"]
+    assert structured["kind"] == "bug"
+    assert structured["product_area"] == "authorization"
+    assert structured["component"] == "menu-engine"
+    assert structured["entity_refs"] == ["user:y", "menu:x"]
+    assert structured["generalizable"] == "yes"
+    assert structured["resolution_confidence"] == 0.92
+    assert structured["commands"] == ["sqlcmd -i perm_fix.sql", "refresh-menu-cache"]
+
+
+def test_log_fast_rejects_invalid_structured_metadata_type(service):
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+
+    with pytest.raises(MemoryInputError, match="INVALID_FIELD_TYPE"):
+        service.log_fast(
+            {
+                "content": "Payload strutturato non valido.",
+                "agent_id": actor.agent_id,
+                "entity_refs": "user:y",
+            },
+            actor,
+        )
+
+
 @pytest.mark.asyncio
 async def test_list_fast_is_project_isolated(service):
     actor_a = ActorContext(agent_id="agent-a", user_id="user-a", workspace_id="ws-test", project_id="project-a")
@@ -222,6 +277,8 @@ async def test_promote_fast_creates_strong_memory_and_marks_source(service):
             "agent_id": actor.agent_id,
             "event_type": "incident",
             "recurrence_count": 4,
+            "component": "import-engine",
+            "kind": "bug",
             "metadata": {"importance_score": 35, "distinct_session_count": 3},
         },
         actor,
@@ -250,6 +307,7 @@ async def test_promote_fast_creates_strong_memory_and_marks_source(service):
     assert strong_entry.type == EntryType.FACT
     assert strong_entry.source == "internal_governance"
     assert strong_entry.metadata["fast_memory_origin"]["entry_id"] == fast_entry.id
+    assert strong_entry.metadata["structured_context"]["component"] == "import-engine"
     assert strong_entry.metadata["persistence_decision"]["write_path"] == "promote_fast"
     assert strong_entry.content.startswith("L'import incrementale fallisce")
 

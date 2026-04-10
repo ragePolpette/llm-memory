@@ -110,6 +110,31 @@ class MemoryService:
     _WORKSPACE_BUCKET_PROJECT_ID = "__workspace__"
     _GLOBAL_BUCKET_WORKSPACE_ID = "__global__"
     _GLOBAL_BUCKET_PROJECT_ID = "__global__"
+    _FAST_STRUCTURED_TEXT_FIELDS = frozenset(
+        {
+            "product_area",
+            "component",
+            "feature",
+            "action_taken",
+            "outcome",
+            "root_cause_hypothesis",
+            "sql_patch",
+            "observed_by",
+            "affected_user_scope",
+        }
+    )
+    _FAST_STRUCTURED_LIST_FIELDS = frozenset(
+        {
+            "entity_refs",
+            "symptoms",
+            "evidence_refs",
+            "commands",
+        }
+    )
+    _FAST_STRUCTURED_ENUM_FIELDS = {
+        "kind": frozenset({"bug", "fix", "incident", "investigation", "decision_input", "note"}),
+        "generalizable": frozenset({"yes", "no", "uncertain"}),
+    }
 
     def __init__(
         self,
@@ -136,6 +161,120 @@ class MemoryService:
             metadata={"source": "bootstrap-default"},
         )
         self.store.upsert_project(default_project)
+
+    @staticmethod
+    def _normalize_string_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("value must be a list")
+        normalized: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                normalized.append(text)
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in normalized:
+            if item in seen:
+                continue
+            seen.add(item)
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _normalize_optional_text(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @staticmethod
+    def _normalize_optional_probability(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        return max(0.0, min(1.0, float(value)))
+
+    def _normalize_fast_structured_context(self, payload: dict[str, Any]) -> dict[str, Any]:
+        metadata = payload.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        existing = metadata.get("structured_context")
+        if existing is None:
+            existing = {}
+        if not isinstance(existing, dict):
+            raise MemoryInputError(
+                code="INVALID_FIELD_TYPE",
+                message="metadata.structured_context must be an object when provided.",
+                missing_fields=["metadata.structured_context"],
+                retryable=False,
+            )
+
+        structured = dict(existing)
+
+        for field_name, allowed in self._FAST_STRUCTURED_ENUM_FIELDS.items():
+            raw_value = payload.get(field_name, structured.get(field_name))
+            normalized = self._normalize_optional_text(raw_value)
+            if normalized is None and field_name == "kind":
+                event_fallback = self._normalize_optional_text(payload.get("event_type"))
+                if event_fallback in allowed:
+                    normalized = event_fallback
+            if normalized is None:
+                structured.pop(field_name, None)
+                continue
+            normalized = normalized.lower()
+            if normalized not in allowed:
+                raise MemoryInputError(
+                    code="INVALID_FIELD_TYPE",
+                    message=f"{field_name} must be one of: {', '.join(sorted(allowed))}.",
+                    missing_fields=[field_name],
+                    retryable=False,
+                )
+            structured[field_name] = normalized
+
+        for field_name in self._FAST_STRUCTURED_TEXT_FIELDS:
+            raw_value = payload.get(field_name, structured.get(field_name))
+            normalized = self._normalize_optional_text(raw_value)
+            if normalized is None:
+                structured.pop(field_name, None)
+            else:
+                structured[field_name] = normalized
+
+        for field_name in self._FAST_STRUCTURED_LIST_FIELDS:
+            if field_name in payload:
+                raw_value = payload.get(field_name)
+            else:
+                raw_value = structured.get(field_name)
+            try:
+                normalized = self._normalize_string_list(raw_value)
+            except ValueError as exc:
+                raise MemoryInputError(
+                    code="INVALID_FIELD_TYPE",
+                    message=f"{field_name} must be an array of strings when provided.",
+                    missing_fields=[field_name],
+                    retryable=False,
+                ) from exc
+            if normalized:
+                structured[field_name] = normalized
+            else:
+                structured.pop(field_name, None)
+
+        raw_confidence = payload.get("resolution_confidence", structured.get("resolution_confidence"))
+        if raw_confidence is None:
+            structured.pop("resolution_confidence", None)
+        else:
+            try:
+                structured["resolution_confidence"] = self._normalize_optional_probability(raw_confidence)
+            except (TypeError, ValueError) as exc:
+                raise MemoryInputError(
+                    code="INVALID_FIELD_TYPE",
+                    message="resolution_confidence must be a number between 0 and 1 when provided.",
+                    missing_fields=["resolution_confidence"],
+                    retryable=False,
+                ) from exc
+
+        return structured
 
     def _validate_project_identifier(self, project_id: str) -> str:
         normalized = str(project_id).strip().lower()
@@ -528,6 +667,8 @@ class MemoryService:
                     missing_fields=["recurrence_count"],
                     retryable=False,
                 ) from exc
+
+        self._normalize_fast_structured_context(payload)
 
     @staticmethod
     def _preview_text(value: Any, *, limit: int = 240) -> Any:
@@ -1276,6 +1417,9 @@ class MemoryService:
 
         now_iso = utc_now_iso()
         metadata = dict(payload.get("metadata", {}))
+        structured_context = self._normalize_fast_structured_context(payload)
+        if structured_context:
+            metadata["structured_context"] = structured_context
         computed_selection = build_fast_selection_metadata(
             metadata=metadata,
             recurrence_count=int(payload.get("recurrence_count", 1)),
