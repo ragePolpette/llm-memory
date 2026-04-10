@@ -8,6 +8,7 @@ from mcp.server import Server
 from mcp.types import Tool, TextContent
 
 from ..config import MemoryScope, Tier
+from ..models import EntryType
 from ..service.memory_service import ActorContext, MemoryInputError, MemoryService
 
 
@@ -48,6 +49,9 @@ def _require_explicit_project_scope(name: str, arguments: dict, service: MemoryS
         "memory.log_fast",
         "memory.list_fast",
         "memory.get_fast",
+        "memory.summarize_fast",
+        "memory.discard_fast",
+        "memory.promote_fast",
         "memory.search",
         "memory.get",
         "memory.invalidate",
@@ -562,6 +566,81 @@ def register_tools(server: Server, memory_service: MemoryService):
                 },
             ),
             Tool(
+                name="memory.summarize_fast",
+                description=(
+                    "Segna una fast-memory entry come sintetizzata e salva un summary di distillazione "
+                    "con reason, cluster opzionale e stato resolved opzionale."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "cluster_id": {"type": "string"},
+                        "resolved": {"type": "boolean"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["entry_id", "summary", "reason", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.discard_fast",
+                description=(
+                    "Marca una fast-memory entry come scartata dal processo di distillazione, "
+                    "mantenendo audit trail e stato finale opzionale."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "resolved": {"type": "boolean"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["entry_id", "reason", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.promote_fast",
+                description=(
+                    "Promuove una fast-memory entry nella memoria forte creando una knowledge entry "
+                    "ricercabile e marcando la sorgente come promoted."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "target_tier": {
+                            "type": "string",
+                            "enum": ["tier-1", "tier-2", "tier-3"],
+                            "default": "tier-3",
+                        },
+                        "memory_type": {
+                            "type": "string",
+                            "enum": ["fact", "assumption", "unknown", "decision"],
+                            "default": "fact",
+                        },
+                        "visibility": {
+                            "type": "string",
+                            "enum": ["private", "shared", "global"],
+                            "default": "shared",
+                        },
+                        "summary": {"type": "string"},
+                        "confidence": {"type": "number", "default": 0.7},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["entry_id", "reason", "agent_id"],
+                },
+            ),
+            Tool(
                 name="memory.get",
                 description="Recupera una memoria operativa per id (v2)",
                 inputSchema={
@@ -733,7 +812,7 @@ def register_tools(server: Server, memory_service: MemoryService):
                     "multi_project_enabled": bool(memory_service.config.multi_project_enabled),
                     "scope_hierarchy": ["project", "workspace", "global"],
                     "capabilities": [
-                        "list_projects/get_project_info/create_project/scope_overview/add/log_fast/list_fast/get_fast/search/get/invalidate/promote/reembed/export/import"
+                        "list_projects/get_project_info/create_project/scope_overview/add/log_fast/list_fast/get_fast/summarize_fast/discard_fast/promote_fast/search/get/invalidate/promote/reembed/export/import"
                     ],
                     "tool_map": {
                         "generic": {
@@ -742,6 +821,9 @@ def register_tools(server: Server, memory_service: MemoryService):
                             "memory.log_fast": "Scrittura esplicita nella fast memory episodica.",
                             "memory.list_fast": "Elenco fast-memory entries del progetto corrente.",
                             "memory.get_fast": "Recupera una fast-memory entry per id.",
+                            "memory.summarize_fast": "Segna una fast-memory entry come sintetizzata.",
+                            "memory.discard_fast": "Scarta una fast-memory entry nel processo di distillazione.",
+                            "memory.promote_fast": "Promuove una fast-memory entry nella memoria forte.",
                             "memory.search": "Ricerca generica sulle memorie persistenti.",
                         },
                         "harness": {
@@ -890,6 +972,42 @@ def register_tools(server: Server, memory_service: MemoryService):
         if name == "memory.get_fast":
             entry = memory_service.get_fast(arguments["entry_id"], actor)
             return _json_text({"api_version": "v2", "entry": entry.model_dump(mode="json") if entry else None})
+
+        if name == "memory.summarize_fast":
+            payload = memory_service.summarize_fast(
+                entry_id=arguments["entry_id"],
+                actor=actor,
+                summary=arguments["summary"],
+                reason=arguments["reason"],
+                cluster_id=arguments.get("cluster_id"),
+                resolved=arguments.get("resolved"),
+            )
+            payload["api_version"] = "v2"
+            return _json_text(payload)
+
+        if name == "memory.discard_fast":
+            payload = memory_service.discard_fast(
+                entry_id=arguments["entry_id"],
+                actor=actor,
+                reason=arguments["reason"],
+                resolved=arguments.get("resolved"),
+            )
+            payload["api_version"] = "v2"
+            return _json_text(payload)
+
+        if name == "memory.promote_fast":
+            payload = await memory_service.promote_fast(
+                entry_id=arguments["entry_id"],
+                actor=actor,
+                reason=arguments["reason"],
+                target_tier=Tier(arguments["target_tier"]) if arguments.get("target_tier") else None,
+                memory_type=EntryType(arguments.get("memory_type", EntryType.FACT.value)),
+                visibility=MemoryScope(arguments.get("visibility", MemoryScope.SHARED.value)),
+                summary=arguments.get("summary"),
+                confidence=float(arguments.get("confidence", 0.7)),
+            )
+            payload["api_version"] = "v2"
+            return _json_text(payload)
 
         if name == "capture_inference_memory":
             payload = _build_inference_capture_payload(arguments, actor, memory_service)
