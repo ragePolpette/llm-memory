@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from src.config import MemoryScope, Tier
+from src.models import EntryType, FastMemoryDistillationStatus
 from src.service.memory_service import ActorContext, MemoryInputError
 
 
@@ -147,3 +149,136 @@ def test_get_fast_denies_cross_project_read(service):
 
     with pytest.raises(PermissionError, match="Read denied by scope policy"):
         service.get_fast(result["entry_id"], actor_b)
+
+
+def test_summarize_fast_updates_status_and_audits(service):
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+    created = service.log_fast(
+        {
+            "content": "Sequenza sporca di retry sul parser CSV.",
+            "agent_id": actor.agent_id,
+            "event_type": "retry",
+        },
+        actor,
+    )
+
+    result = service.summarize_fast(
+        entry_id=created["entry_id"],
+        actor=actor,
+        summary="Retry rumorosi sul parser CSV senza nuovi segnali utili.",
+        reason="manual triage",
+        cluster_id="cluster-csv",
+        resolved=True,
+    )
+
+    entry = service.get_fast(created["entry_id"], actor)
+    assert entry is not None
+    assert result["distillation_status"] == FastMemoryDistillationStatus.SUMMARIZED.value
+    assert entry.distillation_status == FastMemoryDistillationStatus.SUMMARIZED
+    assert entry.cluster_id == "cluster-csv"
+    assert entry.resolved is True
+    assert entry.metadata["distillation_summary"].startswith("Retry rumorosi")
+    assert entry.metadata["last_fast_memory_distillation"]["action"] == "summarize"
+
+    audits = service.store.list_audit(entry_id=created["entry_id"], limit=10)
+    assert any(audit.action == "fast_summarize" and audit.reason == "manual triage" for audit in audits)
+
+
+def test_discard_fast_marks_entry_discarded(service):
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+    created = service.log_fast(
+        {
+            "content": "Burst ripetuto dello stesso fallback locale.",
+            "agent_id": actor.agent_id,
+            "event_type": "retry",
+        },
+        actor,
+    )
+
+    result = service.discard_fast(
+        entry_id=created["entry_id"],
+        actor=actor,
+        reason="noise-only pattern",
+        resolved=False,
+    )
+
+    entry = service.get_fast(created["entry_id"], actor)
+    assert entry is not None
+    assert result["distillation_status"] == FastMemoryDistillationStatus.DISCARDED.value
+    assert entry.distillation_status == FastMemoryDistillationStatus.DISCARDED
+    assert entry.metadata["last_fast_memory_distillation"]["action"] == "discard"
+
+    audits = service.store.list_audit(entry_id=created["entry_id"], limit=10)
+    assert any(audit.action == "fast_discard" and audit.reason == "noise-only pattern" for audit in audits)
+
+
+@pytest.mark.asyncio
+async def test_promote_fast_creates_strong_memory_and_marks_source(service):
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+    created = service.log_fast(
+        {
+            "content": "Errore ricorrente sull'import incrementale dopo resume.",
+            "context": "incident review",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "recurrence_count": 4,
+            "metadata": {"importance_score": 35, "distinct_session_count": 3},
+        },
+        actor,
+    )
+
+    result = await service.promote_fast(
+        entry_id=created["entry_id"],
+        actor=actor,
+        reason="recurring import issue became reusable knowledge",
+        target_tier=Tier.TIER_2,
+        memory_type=EntryType.FACT,
+        visibility=MemoryScope.SHARED,
+        summary="L'import incrementale fallisce dopo resume se il checkpoint locale non viene riallineato.",
+        confidence=0.85,
+    )
+
+    fast_entry = service.get_fast(created["entry_id"], actor)
+    strong_entry = service.get(result["promoted_entry_id"], actor)
+
+    assert fast_entry is not None
+    assert strong_entry is not None
+    assert result["distillation_status"] == FastMemoryDistillationStatus.PROMOTED.value
+    assert fast_entry.distillation_status == FastMemoryDistillationStatus.PROMOTED
+    assert fast_entry.metadata["promoted_entry_id"] == strong_entry.id
+    assert strong_entry.tier == Tier.TIER_2
+    assert strong_entry.type == EntryType.FACT
+    assert strong_entry.source == "internal_governance"
+    assert strong_entry.metadata["fast_memory_origin"]["entry_id"] == fast_entry.id
+    assert strong_entry.metadata["persistence_decision"]["write_path"] == "promote_fast"
+    assert strong_entry.content.startswith("L'import incrementale fallisce")
+
+    audits = service.store.list_audit(entry_id=created["entry_id"], limit=20)
+    assert any(audit.action == "fast_promote" for audit in audits)
+
+
+@pytest.mark.asyncio
+async def test_promote_fast_denies_cross_project_promotion(service):
+    actor_a = ActorContext(agent_id="agent-a", user_id="user-a", workspace_id="ws-test", project_id="project-a")
+    actor_b = ActorContext(agent_id="agent-b", user_id="user-b", workspace_id="ws-test", project_id="project-b")
+    service.create_project(actor=actor_a, project_id="project-a")
+    service.create_project(actor=actor_b, project_id="project-b")
+
+    created = service.log_fast(
+        {
+            "content": "Nota veloce riservata al progetto A.",
+            "agent_id": actor_a.agent_id,
+            "scope": {
+                "workspace_id": "ws-test",
+                "project_id": "project-a",
+            },
+        },
+        actor_a,
+    )
+
+    with pytest.raises(PermissionError, match="Write denied by scope policy"):
+        await service.promote_fast(
+            entry_id=created["entry_id"],
+            actor=actor_b,
+            reason="should not cross projects",
+        )
