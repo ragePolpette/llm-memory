@@ -132,6 +132,8 @@ This repository is in active development, but the core runtime is already functi
 - [docs/QUALITY_GATE.md](docs/QUALITY_GATE.md)
 - [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
 - [docs/DUAL_MEMORY_INTEGRATION_PLAN.md](docs/DUAL_MEMORY_INTEGRATION_PLAN.md)
+- [docs/FAST_MEMORY_FOUNDATION_PLAN.md](docs/FAST_MEMORY_FOUNDATION_PLAN.md)
+- [docs/FAST_MEMORY_SCORING_SPEC.md](docs/FAST_MEMORY_SCORING_SPEC.md)
 
 ## Development Process
 
