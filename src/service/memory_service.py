@@ -18,6 +18,8 @@ from ..models import (
     EntryStatus,
     EntryType,
     ExportResult,
+    FastMemoryDistillationStatus,
+    FastMemoryEntry,
     ImportResult,
     MemoryBundle,
     MemoryEntry,
@@ -382,6 +384,44 @@ class MemoryService:
                     code="INVALID_FIELD_TYPE",
                     message=f"{key} must be a string when provided.",
                     missing_fields=[key],
+                retryable=False,
+            )
+
+    def _validate_fast_payload(self, payload: dict[str, Any]) -> None:
+        content = payload.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise MemoryInputError(
+                code="INVALID_CONTENT",
+                message="content must be a non-empty string.",
+                missing_fields=["content"],
+                retryable=False,
+            )
+
+        agent_id = payload.get("agent_id")
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            raise MemoryInputError(
+                code="INVALID_AGENT_ID",
+                message="agent_id must be a non-empty string.",
+                missing_fields=["agent_id"],
+                retryable=False,
+            )
+
+        event_type = payload.get("event_type", "note")
+        if not isinstance(event_type, str) or not event_type.strip():
+            raise MemoryInputError(
+                code="INVALID_EVENT_TYPE",
+                message="event_type must be a non-empty string when provided.",
+                missing_fields=["event_type"],
+                retryable=False,
+            )
+
+        for key in ("context", "session_id"):
+            value = payload.get(key)
+            if value is not None and not isinstance(value, str):
+                raise MemoryInputError(
+                    code="INVALID_FIELD_TYPE",
+                    message=f"{key} must be a string when provided.",
+                    missing_fields=[key],
                     retryable=False,
                 )
 
@@ -718,6 +758,12 @@ class MemoryService:
         if visibility == MemoryScope.PRIVATE and scope.agent_id and scope.agent_id != actor.agent_id:
             return False
         return True
+
+    def _can_read_fast(self, actor: ActorContext, entry: FastMemoryEntry) -> bool:
+        return (
+            entry.workspace_id == actor.workspace_id
+            and entry.project_id == actor.project_id
+        )
 
     def _snippet_for(self, entry: MemoryEntry, max_chars: int = 220) -> str:
         content = entry.content
@@ -1102,6 +1148,126 @@ class MemoryService:
             },
         )
         return result
+
+    def log_fast(self, payload: dict[str, Any], actor: ActorContext, *, write_path: str = "log_fast") -> dict[str, Any]:
+        scope = self._scope_from_payload(payload, actor)
+        visibility = MemoryScope(payload.get("visibility", payload.get("scope_visibility", "shared")))
+
+        self._log_activity(
+            "fast_write_in",
+            {
+                "operation": write_path,
+                "agent_id": actor.agent_id,
+                "workspace_id": scope.workspace_id,
+                "project_id": scope.project_id,
+                "event_type": payload.get("event_type", "note"),
+                "content": self._preview_text(payload.get("content")),
+            },
+        )
+
+        self._validate_fast_payload(payload)
+
+        if not self._can_write(actor, visibility, scope):
+            raise PermissionError("Write denied by scope policy")
+
+        now_iso = utc_now_iso()
+        entry = FastMemoryEntry(
+            workspace_id=scope.workspace_id,
+            project_id=scope.project_id,
+            agent_id=payload["agent_id"],
+            user_id=payload.get("user_id", actor.user_id),
+            session_id=payload.get("session_id"),
+            event_type=str(payload.get("event_type", "note")).strip(),
+            content=payload["content"].strip(),
+            context=payload.get("context", ""),
+            tags=payload.get("tags", []),
+            metadata=dict(payload.get("metadata", {})),
+            source=payload.get("source", "mcp"),
+            resolved=bool(payload.get("resolved", False)),
+            distillation_status=FastMemoryDistillationStatus(
+                payload.get("distillation_status", FastMemoryDistillationStatus.PENDING.value)
+            ),
+            distilled_at=payload.get("distilled_at"),
+            cluster_id=payload.get("cluster_id"),
+            recurrence_count=int(payload.get("recurrence_count", 1)),
+            first_seen_at=payload.get("first_seen_at", now_iso),
+            last_seen_at=payload.get("last_seen_at", now_iso),
+            selection_score=payload.get("selection_score"),
+            created_at=payload.get("created_at", now_iso),
+            updated_at=payload.get("updated_at", now_iso),
+        )
+
+        self.store.add_fast_entry(entry)
+        self.store.add_audit(
+            AuditEvent(
+                entry_id=entry.id,
+                action="fast_write",
+                actor=actor.agent_id,
+                reason=write_path,
+                payload={
+                    "workspace_id": entry.workspace_id,
+                    "project_id": entry.project_id,
+                    "event_type": entry.event_type,
+                    "resolved": entry.resolved,
+                    "distillation_status": entry.distillation_status.value,
+                    "source": entry.source,
+                },
+            )
+        )
+
+        result = {
+            "success": True,
+            "entry_id": entry.id,
+            "event_type": entry.event_type,
+            "resolved": entry.resolved,
+            "distillation_status": entry.distillation_status.value,
+            "workspace_id": entry.workspace_id,
+            "project_id": entry.project_id,
+        }
+        self._log_activity(
+            "fast_write_out",
+            {
+                "operation": write_path,
+                "agent_id": actor.agent_id,
+                "success": True,
+                "entry_id": entry.id,
+                "event_type": entry.event_type,
+                "resolved": entry.resolved,
+            },
+        )
+        return result
+
+    def get_fast(self, entry_id: str, actor: ActorContext) -> Optional[FastMemoryEntry]:
+        entry = self.store.get_fast_entry(entry_id)
+        if entry is None:
+            return None
+        if not self._can_read_fast(actor, entry):
+            raise PermissionError("Read denied by scope policy")
+        return entry
+
+    def list_fast(
+        self,
+        actor: ActorContext,
+        *,
+        limit: int = 100,
+        event_type: Optional[str] = None,
+        resolved: Optional[bool] = None,
+        distillation_status: Optional[str] = None,
+    ) -> list[FastMemoryEntry]:
+        requested_status = (
+            FastMemoryDistillationStatus(distillation_status)
+            if distillation_status is not None
+            else None
+        )
+        entries = self.store.list_fast_entries(
+            workspace_id=actor.workspace_id,
+            project_id=actor.project_id,
+            event_type=event_type,
+            resolved=resolved,
+            distillation_status=requested_status,
+            limit=limit,
+        )
+        return [entry for entry in entries if self._can_read_fast(actor, entry)]
 
     def get(self, entry_id: str, actor: ActorContext) -> Optional[MemoryEntry]:
         entry = self.store.get_entry(entry_id)
