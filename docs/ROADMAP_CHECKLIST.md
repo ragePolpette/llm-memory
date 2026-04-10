@@ -76,14 +76,14 @@ These items matter once the repo is already coherent and usable.
 ## Milestone 2.5: Dual Memory And Distillation
 
 These items extend the product from durable memory only to a deliberate two-layer
-model: strong reusable knowledge plus raw episodic material for later compression.
+model: strong reusable knowledge plus fast episodic material for later compression.
 
-- [ ] `P1` Add a separate raw-memory layer for episodic/log-like writes without polluting semantic retrieval
-- [ ] `P1` Add a dedicated raw write API, keeping direct structured writes available
-- [ ] `P1` Add read-only admin visibility for raw-memory counts, recent events, and distillation status
-- [ ] `P2` Add a manual local distillation pipeline from raw memory to structured candidates
-- [ ] `P2` Add recurrence-aware scoring for raw-memory promotion, with damping against noisy loops
-- [ ] `P2` Link promoted structured memories back to raw evidence for auditability
+- [ ] `P1` Add a separate fast-memory layer for episodic/log-like writes without polluting semantic retrieval
+- [ ] `P1` Add a dedicated fast write API, keeping direct structured writes available
+- [ ] `P1` Add read-only admin visibility for fast-memory counts, recent events, and distillation status
+- [ ] `P2` Add a manual local distillation pipeline from fast memory to structured candidates
+- [ ] `P2` Add recurrence-aware scoring for fast-memory promotion, with damping against noisy loops
+- [ ] `P2` Link promoted structured memories back to fast-memory evidence for auditability
 - [ ] `P3` Add a unified router that can choose `structured`, `raw`, or `drop`
 - [ ] `P3` Keep "weights edit" or ROME-like memory mutation out of scope until the raw-memory workflow proves useful
 
@@ -110,6 +110,7 @@ These items are intentionally lower priority. They matter if the tool starts bei
 - [x] `2026-03-26` Add coverage support and a documented quality gate - branch: `feature/coverage-quality-gate` - PR: `#16` - notes: Added coverage configuration, documented the local quality gate, and aligned release/dev docs with an explicit coverage command and threshold.
 - [x] `2026-03-26` Add local admin HTTP surface for audit inspection - branch: `feature/memory-admin-http-surface` - PR: `#17` - notes: Added read-only HTTP admin endpoints for summary, audit, and projects, with filtered audit queries and route-level test coverage.
 - [x] `2026-04-10` Integrate dual-memory roadmap extension - branch: `docs/dual-memory-roadmap` - PR: `pending` - notes: Added a concrete plan for raw episodic memory, batch distillation, recurrence-aware promotion, and future router integration without polluting the strong-memory path.
+- [x] `2026-04-10` Add fast-memory foundation operational plan - branch: `docs/fast-memory-foundation-plan` - PR: `pending` - notes: Formalized the first implementation slice, renamed the episodic layer to fast memory, and fixed the v1 selection scoring approach around static score, recurrence, and noise penalty.
 
 ## Update Rule
 
