@@ -45,6 +45,9 @@ def _require_explicit_project_scope(name: str, arguments: dict, service: MemoryS
         return
     if name not in {
         "memory.add",
+        "memory.log_fast",
+        "memory.list_fast",
+        "memory.get_fast",
         "memory.search",
         "memory.get",
         "memory.invalidate",
@@ -475,6 +478,90 @@ def register_tools(server: Server, memory_service: MemoryService):
                 },
             ),
             Tool(
+                name="memory.log_fast",
+                description=(
+                    "Scrive nella fast memory episodica del progetto corrente. Usare per tentativi, "
+                    "incidenti, fix temporanei e note operative che non devono entrare subito nella memoria forte."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string"},
+                        "context": {"type": "string"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "session_id": {"type": "string"},
+                        "event_type": {"type": "string", "default": "note"},
+                        "scope": {
+                            "type": "object",
+                            "properties": {
+                                "scope_level": {"type": "string", "enum": ["project", "workspace", "global"]},
+                                "workspace_id": {"type": "string"},
+                                "project_id": {"type": "string"},
+                                "user_id": {"type": "string"},
+                                "agent_id": {"type": "string"},
+                            },
+                        },
+                        "visibility": {
+                            "type": "string",
+                            "enum": ["private", "shared", "global"],
+                            "default": "shared",
+                        },
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "metadata": {"type": "object"},
+                        "source": {"type": "string", "default": "mcp"},
+                        "resolved": {"type": "boolean", "default": False},
+                    },
+                    "required": ["content", "agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.list_fast",
+                description=(
+                    "Elenca le fast-memory entries del progetto corrente con filtri base su event_type, "
+                    "resolved e distillation_status."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {
+                            "type": "object",
+                            "properties": {
+                                "scope_level": {"type": "string", "enum": ["project", "workspace", "global"]},
+                                "workspace_id": {"type": "string"},
+                                "project_id": {"type": "string"},
+                                "user_id": {"type": "string"},
+                                "agent_id": {"type": "string"},
+                            },
+                        },
+                        "limit": {"type": "integer", "default": 100},
+                        "event_type": {"type": "string"},
+                        "resolved": {"type": "boolean"},
+                        "distillation_status": {
+                            "type": "string",
+                            "enum": ["pending", "summarized", "promoted", "discarded"],
+                        },
+                    },
+                    "required": ["agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.get_fast",
+                description="Recupera una fast-memory entry per id nel perimetro di scope corrente.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                    },
+                    "required": ["entry_id", "agent_id"],
+                },
+            ),
+            Tool(
                 name="memory.get",
                 description="Recupera una memoria operativa per id (v2)",
                 inputSchema={
@@ -646,12 +733,15 @@ def register_tools(server: Server, memory_service: MemoryService):
                     "multi_project_enabled": bool(memory_service.config.multi_project_enabled),
                     "scope_hierarchy": ["project", "workspace", "global"],
                     "capabilities": [
-                        "list_projects/get_project_info/create_project/scope_overview/add/search/get/invalidate/promote/reembed/export/import"
+                        "list_projects/get_project_info/create_project/scope_overview/add/log_fast/list_fast/get_fast/search/get/invalidate/promote/reembed/export/import"
                     ],
                     "tool_map": {
                         "generic": {
                             "memory.about": "Guida server, boundary e scope hierarchy.",
                             "memory.add": "Scrittura generica di memoria persistente.",
+                            "memory.log_fast": "Scrittura esplicita nella fast memory episodica.",
+                            "memory.list_fast": "Elenco fast-memory entries del progetto corrente.",
+                            "memory.get_fast": "Recupera una fast-memory entry per id.",
                             "memory.search": "Ricerca generica sulle memorie persistenti.",
                         },
                         "harness": {
@@ -772,6 +862,34 @@ def register_tools(server: Server, memory_service: MemoryService):
                 include_global=bool(arguments.get("include_global", True)),
             )
             return _json_text({"api_version": "v2", "count": len(bundles), "bundles": [b.model_dump(mode="json") for b in bundles]})
+
+        if name == "memory.log_fast":
+            try:
+                payload = memory_service.log_fast(arguments, actor, write_path="log_fast")
+            except MemoryInputError as exc:
+                raise ValueError(exc.to_json()) from exc
+            payload["api_version"] = "v2"
+            return _json_text(payload)
+
+        if name == "memory.list_fast":
+            entries = memory_service.list_fast(
+                actor=actor,
+                limit=int(arguments.get("limit", 100)),
+                event_type=arguments.get("event_type"),
+                resolved=arguments.get("resolved"),
+                distillation_status=arguments.get("distillation_status"),
+            )
+            return _json_text(
+                {
+                    "api_version": "v2",
+                    "count": len(entries),
+                    "entries": [entry.model_dump(mode="json") for entry in entries],
+                }
+            )
+
+        if name == "memory.get_fast":
+            entry = memory_service.get_fast(arguments["entry_id"], actor)
+            return _json_text({"api_version": "v2", "entry": entry.model_dump(mode="json") if entry else None})
 
         if name == "capture_inference_memory":
             payload = _build_inference_capture_payload(arguments, actor, memory_service)
