@@ -133,6 +133,14 @@ async def test_admin_summary_exposes_local_runtime_state(monkeypatch, service):
         },
         actor,
     )
+    service.log_fast(
+        {
+            "content": "Fix rapido applicato al parser di import.",
+            "agent_id": actor.agent_id,
+            "event_type": "fix_attempt",
+        },
+        actor,
+    )
 
     monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
 
@@ -143,7 +151,9 @@ async def test_admin_summary_exposes_local_runtime_state(monkeypatch, service):
     assert payload["status"] == "ok"
     assert payload["summary"]["counts"]["projects_total"] >= 2
     assert payload["summary"]["counts"]["active_entries"] >= 1
+    assert payload["summary"]["counts"]["fast_entries_total"] >= 1
     assert payload["summary"]["counts"]["audit_events_total"] >= 1
+    assert payload["summary"]["fast_memory"]["pending"] >= 1
 
 
 @pytest.mark.asyncio
@@ -204,6 +214,14 @@ async def test_admin_projects_returns_entry_counts(monkeypatch, service):
         },
         actor,
     )
+    service.log_fast(
+        {
+            "content": "Errore episodico in fase di export locale.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+        },
+        actor,
+    )
 
     monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
     request = SimpleNamespace(query_params={"workspace_id": "ws-test", "limit": "20"})
@@ -215,3 +233,80 @@ async def test_admin_projects_returns_entry_counts(monkeypatch, service):
     project = next(item for item in payload["projects"]["items"] if item["project_id"] == "project-alpha")
     assert project["entry_count"] >= 1
     assert project["active_entry_count"] >= 1
+    assert project["fast_entry_count"] >= 1
+    assert project["open_fast_entry_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_admin_fast_memory_supports_filters(monkeypatch, service):
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
+    service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
+    service.log_fast(
+        {
+            "content": "Retry rumoroso sul parser.",
+            "agent_id": actor.agent_id,
+            "event_type": "retry",
+            "resolved": True,
+        },
+        actor,
+    )
+    second = service.log_fast(
+        {
+            "content": "Incidente reale sull'import incrementale.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "session_id": "session-fast-admin",
+        },
+        actor,
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(query_params={"project_id": "project-alpha", "event_type": "incident", "resolved": "false"})
+
+    response = await http_server.admin_fast_memory(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["fast_memory"]["count"] == 1
+    assert payload["fast_memory"]["filters"]["resolved"] is False
+    assert payload["fast_memory"]["items"][0]["id"] == second["entry_id"]
+    assert payload["fast_memory"]["items"][0]["content_preview"].startswith("Incidente reale")
+
+
+@pytest.mark.asyncio
+async def test_admin_fast_memory_entry_returns_detail(monkeypatch, service):
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
+    service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
+    logged = service.log_fast(
+        {
+            "content": "Tentativo di fix temporaneo sul deduplicatore.",
+            "context": "cluster duplicate warnings",
+            "agent_id": actor.agent_id,
+            "event_type": "fix_attempt",
+        },
+        actor,
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(path_params={"entry_id": logged["entry_id"]})
+
+    response = await http_server.admin_fast_memory_entry(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["entry"]["id"] == logged["entry_id"]
+    assert payload["entry"]["event_type"] == "fix_attempt"
+    assert "content_preview" in payload["entry"]
+
+
+@pytest.mark.asyncio
+async def test_admin_fast_memory_rejects_invalid_resolved_filter(monkeypatch, service):
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(query_params={"resolved": "maybe"})
+
+    response = await http_server.admin_fast_memory(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 400
+    assert payload["error"]["type"] == "bad_request"
+    assert "resolved must be a boolean value" in payload["error"]["message"]
