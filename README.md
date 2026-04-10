@@ -131,6 +131,7 @@ This repository is in active development, but the core runtime is already functi
 - [CHANGELOG.md](CHANGELOG.md)
 - [docs/QUALITY_GATE.md](docs/QUALITY_GATE.md)
 - [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
+- [docs/DUAL_MEMORY_INTEGRATION_PLAN.md](docs/DUAL_MEMORY_INTEGRATION_PLAN.md)
 
 ## Development Process
 
