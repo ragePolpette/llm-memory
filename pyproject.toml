@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 llm-memory = "src.mcp_server.server:main"
+llm-memory-fast-distill = "src.fast_memory_cli:main"
 
 [build-system]
 requires = ["hatchling"]
