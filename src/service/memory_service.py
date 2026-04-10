@@ -1364,6 +1364,49 @@ class MemoryService:
             raise PermissionError("Read denied by scope policy")
         return entry
 
+    def _get_fast_for_mutation(self, entry_id: str, actor: ActorContext) -> FastMemoryEntry:
+        entry = self.store.get_fast_entry(entry_id)
+        if entry is None:
+            raise ValueError(f"Fast-memory entry '{entry_id}' was not found")
+        if not self._can_read_fast(actor, entry):
+            raise PermissionError("Write denied by scope policy")
+        return entry
+
+    @staticmethod
+    def _require_non_empty_reason(reason: str, *, field_name: str = "reason") -> str:
+        normalized = str(reason).strip()
+        if not normalized:
+            raise ValueError(f"{field_name} must be a non-empty string")
+        return normalized
+
+    @staticmethod
+    def _merge_fast_distillation_metadata(
+        metadata: dict[str, Any],
+        *,
+        action: str,
+        actor: ActorContext,
+        reason: str,
+        at: str,
+        extra: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        merged = dict(metadata)
+        trail = merged.get("fast_memory_distillation")
+        if not isinstance(trail, list):
+            trail = []
+        trail = list(trail)
+        event = {
+            "action": action,
+            "reason": reason,
+            "at": at,
+            "actor": actor.agent_id,
+        }
+        if extra:
+            event.update(extra)
+        trail.append(event)
+        merged["fast_memory_distillation"] = trail
+        merged["last_fast_memory_distillation"] = event
+        return merged
+
     def list_fast(
         self,
         actor: ActorContext,
@@ -1387,6 +1430,241 @@ class MemoryService:
             limit=limit,
         )
         return [entry for entry in entries if self._can_read_fast(actor, entry)]
+
+    def summarize_fast(
+        self,
+        *,
+        entry_id: str,
+        actor: ActorContext,
+        summary: str,
+        reason: str,
+        cluster_id: Optional[str] = None,
+        resolved: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        normalized_summary = self._require_non_empty_reason(summary, field_name="summary")
+        normalized_reason = self._require_non_empty_reason(reason)
+        entry = self._get_fast_for_mutation(entry_id, actor)
+
+        now_iso = utc_now_iso()
+        entry.metadata = self._merge_fast_distillation_metadata(
+            entry.metadata,
+            action="summarize",
+            actor=actor,
+            reason=normalized_reason,
+            at=now_iso,
+            extra={"summary": normalized_summary},
+        )
+        entry.metadata["distillation_summary"] = normalized_summary
+        entry.distillation_status = FastMemoryDistillationStatus.SUMMARIZED
+        entry.distilled_at = now_iso
+        if cluster_id is not None:
+            entry.cluster_id = str(cluster_id).strip() or None
+        if resolved is not None:
+            entry.resolved = bool(resolved)
+        entry.updated_at = now_iso
+        self.store.update_fast_entry(entry)
+        self.store.add_audit(
+            AuditEvent(
+                entry_id=entry.id,
+                action="fast_summarize",
+                actor=actor.agent_id,
+                reason=normalized_reason,
+                payload={
+                    "distillation_status": entry.distillation_status.value,
+                    "cluster_id": entry.cluster_id,
+                    "resolved": entry.resolved,
+                    "summary_preview": self._preview_text(normalized_summary),
+                },
+            )
+        )
+        return {
+            "success": True,
+            "entry_id": entry.id,
+            "distillation_status": entry.distillation_status.value,
+            "cluster_id": entry.cluster_id,
+            "resolved": entry.resolved,
+            "distilled_at": entry.distilled_at,
+            "summary": normalized_summary,
+        }
+
+    def discard_fast(
+        self,
+        *,
+        entry_id: str,
+        actor: ActorContext,
+        reason: str,
+        resolved: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        normalized_reason = self._require_non_empty_reason(reason)
+        entry = self._get_fast_for_mutation(entry_id, actor)
+
+        now_iso = utc_now_iso()
+        entry.metadata = self._merge_fast_distillation_metadata(
+            entry.metadata,
+            action="discard",
+            actor=actor,
+            reason=normalized_reason,
+            at=now_iso,
+        )
+        entry.distillation_status = FastMemoryDistillationStatus.DISCARDED
+        entry.distilled_at = now_iso
+        if resolved is not None:
+            entry.resolved = bool(resolved)
+        entry.updated_at = now_iso
+        self.store.update_fast_entry(entry)
+        self.store.add_audit(
+            AuditEvent(
+                entry_id=entry.id,
+                action="fast_discard",
+                actor=actor.agent_id,
+                reason=normalized_reason,
+                payload={
+                    "distillation_status": entry.distillation_status.value,
+                    "resolved": entry.resolved,
+                },
+            )
+        )
+        return {
+            "success": True,
+            "entry_id": entry.id,
+            "distillation_status": entry.distillation_status.value,
+            "resolved": entry.resolved,
+            "distilled_at": entry.distilled_at,
+        }
+
+    async def promote_fast(
+        self,
+        *,
+        entry_id: str,
+        actor: ActorContext,
+        reason: str,
+        target_tier: Optional[Tier] = None,
+        memory_type: EntryType = EntryType.FACT,
+        visibility: MemoryScope = MemoryScope.SHARED,
+        summary: Optional[str] = None,
+        confidence: float = 0.7,
+    ) -> dict[str, Any]:
+        normalized_reason = self._require_non_empty_reason(reason)
+        entry = self._get_fast_for_mutation(entry_id, actor)
+
+        existing_target_id = entry.metadata.get("promoted_entry_id")
+        if entry.distillation_status == FastMemoryDistillationStatus.PROMOTED and isinstance(existing_target_id, str):
+            return {
+                "success": True,
+                "entry_id": entry.id,
+                "promoted_entry_id": existing_target_id,
+                "distillation_status": entry.distillation_status.value,
+                "target_tier": (target_tier or self.config.promotion_default_target_tier).value,
+                "memory_type": memory_type.value,
+                "duplicate": False,
+                "already_promoted": True,
+            }
+
+        effective_tier = target_tier or self.config.promotion_default_target_tier
+        now_iso = utc_now_iso()
+        promoted_content = str(summary).strip() if summary is not None and str(summary).strip() else entry.content
+        promoted_context = entry.context.strip() or f"Promoted from fast memory ({entry.event_type})"
+        promoted_metadata = dict(entry.metadata)
+        promoted_metadata["fast_memory_origin"] = {
+            "entry_id": entry.id,
+            "workspace_id": entry.workspace_id,
+            "project_id": entry.project_id,
+            "event_type": entry.event_type,
+            "session_id": entry.session_id,
+            "recurrence_count": entry.recurrence_count,
+            "selection_score": entry.selection_score,
+            "reason": normalized_reason,
+            "promoted_at": now_iso,
+        }
+        if summary is not None and str(summary).strip():
+            promoted_metadata["fast_memory_summary"] = str(summary).strip()
+        promoted_entry = MemoryEntry(
+            tier=effective_tier,
+            scope=ScopeRef(
+                workspace_id=entry.workspace_id,
+                project_id=entry.project_id,
+                scope_level=ScopeLevel.PROJECT,
+                user_id=entry.user_id,
+                agent_id=entry.agent_id,
+            ),
+            visibility=visibility,
+            source="fast-memory-distillation",
+            type=memory_type,
+            status=EntryStatus.ACTIVE,
+            content=promoted_content,
+            context=promoted_context,
+            tags=list(entry.tags),
+            metadata=promoted_metadata,
+            confidence=confidence,
+            created_at=now_iso,
+            updated_at=now_iso,
+        )
+        version = self._current_embedding_version()
+        query_vec: Optional[list[float]] = None
+        try:
+            query_vec = (await self.embedding_provider.embed([promoted_content]))[0]
+            if self._has_usable_embedding(query_vec):
+                promoted_entry.embedding_version_id = version.version_id
+        except Exception:
+            query_vec = None
+
+        self._persist_internal_entry(
+            actor=actor,
+            write_path="promote_fast",
+            record_type="fast_promotion",
+            internal_reason=normalized_reason,
+            entry=promoted_entry,
+        )
+        if query_vec is not None and self._has_usable_embedding(query_vec):
+            self.vector_store.upsert(
+                entry_id=promoted_entry.id,
+                version_id=version.version_id,
+                vector=query_vec,
+                created_at=now_iso,
+            )
+
+        promoted_entry_id = promoted_entry.id
+        entry.metadata = self._merge_fast_distillation_metadata(
+            entry.metadata,
+            action="promote",
+            actor=actor,
+            reason=normalized_reason,
+            at=now_iso,
+            extra={
+                "promoted_entry_id": promoted_entry_id,
+                "target_tier": effective_tier.value,
+                "memory_type": memory_type.value,
+            },
+        )
+        entry.metadata["promoted_entry_id"] = promoted_entry_id
+        entry.distillation_status = FastMemoryDistillationStatus.PROMOTED
+        entry.distilled_at = now_iso
+        entry.updated_at = now_iso
+        self.store.update_fast_entry(entry)
+        self.store.add_audit(
+            AuditEvent(
+                entry_id=entry.id,
+                action="fast_promote",
+                actor=actor.agent_id,
+                reason=normalized_reason,
+                payload={
+                    "promoted_entry_id": promoted_entry_id,
+                    "target_tier": effective_tier.value,
+                    "memory_type": memory_type.value,
+                    "duplicate": False,
+                },
+            )
+        )
+        return {
+            "success": True,
+            "entry_id": entry.id,
+            "promoted_entry_id": promoted_entry_id,
+            "distillation_status": entry.distillation_status.value,
+            "target_tier": effective_tier.value,
+            "memory_type": memory_type.value,
+            "duplicate": False,
+            "already_promoted": False,
+        }
 
     def get(self, entry_id: str, actor: ActorContext) -> Optional[MemoryEntry]:
         entry = self.store.get_entry(entry_id)
