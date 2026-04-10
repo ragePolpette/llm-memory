@@ -73,6 +73,9 @@ Discovery and administration:
 Operational memory tools:
 
 - `memory.add`
+- `memory.log_fast`
+- `memory.list_fast`
+- `memory.get_fast`
 - `memory.search`
 - `memory.get`
 - `memory.invalidate`
@@ -109,6 +112,8 @@ Useful local endpoints:
 - `GET /admin/summary`
 - `GET /admin/audit`
 - `GET /admin/projects`
+- `GET /admin/fast-memory`
+- `GET /admin/fast-memory/{entry_id}`
 
 ## Runtime Characteristics
 
