@@ -310,3 +310,77 @@ async def test_admin_fast_memory_rejects_invalid_resolved_filter(monkeypatch, se
     assert response.status_code == 400
     assert payload["error"]["type"] == "bad_request"
     assert "resolved must be a boolean value" in payload["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_admin_fast_memory_candidates_clusters_recurring_patterns(monkeypatch, service):
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
+    service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
+    service.log_fast(
+        {
+            "content": "L'utente y vedeva solo il menu x nel portale.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "session_id": "session-a",
+            "kind": "bug",
+            "product_area": "authorization",
+            "component": "menu-engine",
+            "entity_refs": ["user:y", "menu:x"],
+            "recurrence_count": 2,
+        },
+        actor,
+    )
+    service.log_fast(
+        {
+            "content": "L'utente z vedeva solo il menu x nel portale.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "session_id": "session-b",
+            "kind": "bug",
+            "product_area": "authorization",
+            "component": "menu-engine",
+            "entity_refs": ["user:z", "menu:x"],
+            "recurrence_count": 2,
+        },
+        actor,
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(query_params={"project_id": "project-alpha", "limit": "10"})
+
+    response = await http_server.admin_fast_memory_candidates(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["candidates"]["count"] >= 1
+    first = payload["candidates"]["items"][0]
+    assert first["member_count"] >= 2
+    assert first["distinct_session_count"] >= 2
+    assert first["component"] == "menu-engine"
+    assert "cross_session_signal" in first["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_admin_fast_memory_candidates_support_include_resolved(monkeypatch, service):
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
+    service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
+    service.log_fast(
+        {
+            "content": "Fix già chiuso sul parser markdown.",
+            "agent_id": actor.agent_id,
+            "event_type": "fix_attempt",
+            "resolved": True,
+            "component": "markdown-parser",
+        },
+        actor,
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(query_params={"project_id": "project-alpha", "include_resolved": "true"})
+
+    response = await http_server.admin_fast_memory_candidates(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["candidates"]["filters"]["include_resolved"] is True
+    assert payload["candidates"]["source_count"] >= 1

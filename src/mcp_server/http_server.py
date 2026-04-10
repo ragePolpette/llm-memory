@@ -469,6 +469,30 @@ async def admin_fast_memory(request: Request):
     )
 
 
+async def admin_fast_memory_candidates(request: Request):
+    if runtime is None:
+        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+    try:
+        limit = _parse_limit(request.query_params.get("limit"), default=20, maximum=200)
+        payload = runtime.service.admin_rank_fast_candidates(
+            workspace_id=request.query_params.get("workspace_id"),
+            project_id=request.query_params.get("project_id"),
+            limit=limit,
+            include_resolved=bool(_parse_optional_bool(request.query_params.get("include_resolved")) or False),
+            distillation_status=request.query_params.get("distillation_status"),
+        )
+    except ValueError as exc:
+        return _admin_bad_request(str(exc))
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "llm-memory",
+            "api": "v2",
+            "candidates": payload,
+        }
+    )
+
+
 async def admin_fast_memory_entry(request: Request):
     if runtime is None:
         return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
@@ -503,6 +527,7 @@ routes = [
     Route("/admin/audit", admin_audit, methods=["GET"]),
     Route("/admin/projects", admin_projects, methods=["GET"]),
     Route("/admin/fast-memory", admin_fast_memory, methods=["GET"]),
+    Route("/admin/fast-memory/candidates", admin_fast_memory_candidates, methods=["GET"]),
     Route("/admin/fast-memory/{entry_id:str}", admin_fast_memory_entry, methods=["GET"]),
     Route("/mcp", endpoint=streamable_http_app, methods=["GET", "POST", "DELETE"]),
     Route("/sse", sse_legacy_endpoint, methods=["GET"]),
