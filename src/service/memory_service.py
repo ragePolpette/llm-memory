@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -135,6 +136,34 @@ class MemoryService:
         "kind": frozenset({"bug", "fix", "incident", "investigation", "decision_input", "note"}),
         "generalizable": frozenset({"yes", "no", "uncertain"}),
     }
+    _FAST_CLUSTER_STOPWORDS = frozenset(
+        {
+            "after",
+            "agli",
+            "alla",
+            "allo",
+            "anche",
+            "come",
+            "con",
+            "della",
+            "delle",
+            "dopo",
+            "from",
+            "menu",
+            "nelle",
+            "only",
+            "per",
+            "prima",
+            "quindi",
+            "solo",
+            "sono",
+            "that",
+            "this",
+            "user",
+            "utente",
+            "where",
+        }
+    )
 
     def __init__(
         self,
@@ -196,6 +225,91 @@ class MemoryService:
         if value is None:
             return None
         return max(0.0, min(1.0, float(value)))
+
+    @staticmethod
+    def _fast_structured_context(entry: FastMemoryEntry) -> dict[str, Any]:
+        structured = entry.metadata.get("structured_context")
+        return structured if isinstance(structured, dict) else {}
+
+    def _fast_cluster_text_tokens(self, parts: list[str], *, limit: int = 6) -> list[str]:
+        tokens: list[str] = []
+        for part in parts:
+            for token in re.findall(r"[a-z0-9_]{3,}", str(part).lower()):
+                if token in self._FAST_CLUSTER_STOPWORDS:
+                    continue
+                tokens.append(token)
+        unique: list[str] = []
+        seen: set[str] = set()
+        for token in tokens:
+            if token in seen:
+                continue
+            seen.add(token)
+            unique.append(token)
+            if len(unique) >= limit:
+                return unique
+        return unique
+
+    def _fast_candidate_cluster_key(self, entry: FastMemoryEntry) -> str:
+        structured = self._fast_structured_context(entry)
+        cluster_parts = [
+            str(structured.get("kind") or entry.event_type or "note").strip().lower(),
+            str(structured.get("product_area") or "").strip().lower(),
+            str(structured.get("component") or "").strip().lower(),
+            str(structured.get("feature") or "").strip().lower(),
+        ]
+        text_parts = [
+            entry.content,
+            entry.context,
+            structured.get("root_cause_hypothesis", ""),
+            structured.get("action_taken", ""),
+            structured.get("outcome", ""),
+            " ".join(structured.get("symptoms", [])) if isinstance(structured.get("symptoms"), list) else "",
+        ]
+        tokens = self._fast_cluster_text_tokens([part for part in text_parts if part])
+        fingerprint_source = "|".join(cluster_parts + tokens)
+        fingerprint = compute_content_hash(fingerprint_source or entry.content.lower().strip())[:16]
+        return "::".join(cluster_parts + [fingerprint])
+
+    @staticmethod
+    def _candidate_representative(entries: list[FastMemoryEntry]) -> FastMemoryEntry:
+        return max(
+            entries,
+            key=lambda item: (
+                float(item.selection_score or 0.0),
+                int(item.recurrence_count),
+                item.updated_at.isoformat() if isinstance(item.updated_at, datetime) else str(item.updated_at),
+            ),
+        )
+
+    def _candidate_reason_signals(
+        self,
+        *,
+        structured: dict[str, Any],
+        member_count: int,
+        distinct_session_count: int,
+        distinct_day_count: int,
+        unresolved_count: int,
+        recurrence_total: int,
+        score_breakdown: dict[str, Any],
+    ) -> list[str]:
+        reasons: list[str] = []
+        if member_count >= 2:
+            reasons.append(f"clustered_{member_count}_entries")
+        if recurrence_total >= 3:
+            reasons.append("recurrent_pattern")
+        if distinct_session_count >= 2:
+            reasons.append("cross_session_signal")
+        if distinct_day_count >= 2:
+            reasons.append("cross_day_signal")
+        if unresolved_count >= 1:
+            reasons.append("still_open")
+        if structured.get("generalizable") == "yes":
+            reasons.append("explicitly_generalizable")
+        if float(score_breakdown.get("recurrence_boost", 0.0)) >= 0.15:
+            reasons.append("high_recurrence_boost")
+        if float(score_breakdown.get("noise_penalty", 0.0)) >= 0.4:
+            reasons.append("noise_risk")
+        return reasons
 
     def _normalize_fast_structured_context(self, payload: dict[str, Any]) -> dict[str, Any]:
         metadata = payload.get("metadata")
@@ -578,6 +692,163 @@ class MemoryService:
         payload["content_preview"] = self._preview_text(entry.content, limit=240)
         payload["context_preview"] = self._preview_text(entry.context, limit=160)
         return payload
+
+    def admin_rank_fast_candidates(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        limit: int = 20,
+        include_resolved: bool = False,
+        distillation_status: Optional[str] = None,
+    ) -> dict[str, Any]:
+        clamped_limit = max(1, min(int(limit), 200))
+        requested_status = (
+            FastMemoryDistillationStatus(str(distillation_status).strip().lower())
+            if distillation_status is not None and str(distillation_status).strip()
+            else FastMemoryDistillationStatus.PENDING
+        )
+        pool_limit = max(100, min(clamped_limit * 20, 1000))
+        entries = self.store.list_fast_entries(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            resolved=None if include_resolved else False,
+            distillation_status=requested_status,
+            limit=pool_limit,
+        )
+
+        clusters: dict[str, list[FastMemoryEntry]] = {}
+        for entry in entries:
+            cluster_key = self._fast_candidate_cluster_key(entry)
+            clusters.setdefault(cluster_key, []).append(entry)
+
+        items: list[dict[str, Any]] = []
+        for cluster_key, members in clusters.items():
+            representative = self._candidate_representative(members)
+            structured = self._fast_structured_context(representative)
+            total_recurrence = sum(max(1, int(member.recurrence_count)) for member in members)
+            distinct_sessions = {
+                str(member.session_id).strip()
+                for member in members
+                if member.session_id is not None and str(member.session_id).strip()
+            }
+            distinct_days = {
+                member.created_at.date().isoformat()
+                for member in members
+                if isinstance(member.created_at, datetime)
+            }
+            distinct_agents = {
+                str(member.agent_id).strip()
+                for member in members
+                if str(member.agent_id).strip()
+            }
+            entity_refs: list[str] = []
+            for member in members:
+                member_structured = self._fast_structured_context(member)
+                if isinstance(member_structured.get("entity_refs"), list):
+                    entity_refs.extend(str(item).strip() for item in member_structured["entity_refs"] if str(item).strip())
+            normalized_entities = []
+            seen_entities: set[str] = set()
+            for entity in entity_refs:
+                if entity in seen_entities:
+                    continue
+                seen_entities.add(entity)
+                normalized_entities.append(entity)
+
+            session_buckets: dict[str, int] = {}
+            unique_content_hashes: set[str] = set()
+            retry_members = 0
+            outcome_reuse_count = 0
+            for member in members:
+                session_key = str(member.session_id or "").strip() or "__none__"
+                session_buckets[session_key] = session_buckets.get(session_key, 0) + 1
+                unique_content_hashes.add(compute_content_hash(member.content.strip().lower()))
+                if str(member.event_type).strip().lower() == "retry":
+                    retry_members += 1
+                member_structured = self._fast_structured_context(member)
+                if self._normalize_optional_text(member_structured.get("outcome")):
+                    outcome_reuse_count += 1
+
+            max_session_density = max(session_buckets.values()) if session_buckets else 0
+            duplicate_ratio = 0.0
+            if members:
+                duplicate_ratio = max(0.0, 1.0 - (len(unique_content_hashes) / len(members)))
+            aggregate_metadata = dict(representative.metadata)
+            aggregate_metadata.update(
+                {
+                    "distinct_session_count": len(distinct_sessions),
+                    "distinct_day_count": len(distinct_days),
+                    "outcome_reuse_count": outcome_reuse_count,
+                    "duplicate_ratio": round(duplicate_ratio, 6),
+                    "same_session_ratio": round(max_session_density / max(1, len(members)), 6),
+                    "loop_ratio": round(retry_members / max(1, len(members)), 6),
+                }
+            )
+            score_breakdown = build_fast_selection_metadata(
+                metadata=aggregate_metadata,
+                recurrence_count=total_recurrence,
+                event_type=representative.event_type,
+            )
+            unresolved_count = sum(1 for member in members if not member.resolved)
+            cluster_id = compute_content_hash(cluster_key)[:16]
+            candidate = {
+                "cluster_id": cluster_id,
+                "cluster_key": cluster_key,
+                "candidate_score": score_breakdown["selection_score"],
+                "score_breakdown": score_breakdown,
+                "member_count": len(members),
+                "recurrence_total": total_recurrence,
+                "distinct_session_count": len(distinct_sessions),
+                "distinct_day_count": len(distinct_days),
+                "distinct_agent_count": len(distinct_agents),
+                "distinct_entity_count": len(normalized_entities),
+                "unresolved_count": unresolved_count,
+                "representative_entry_id": representative.id,
+                "representative_event_type": representative.event_type,
+                "representative_kind": structured.get("kind") or representative.event_type,
+                "product_area": structured.get("product_area"),
+                "component": structured.get("component"),
+                "feature": structured.get("feature"),
+                "generalizable": structured.get("generalizable"),
+                "entity_refs": normalized_entities[:8],
+                "member_entry_ids": [member.id for member in members],
+                "content_preview": self._preview_text(representative.content, limit=240),
+                "context_preview": self._preview_text(representative.context, limit=160),
+                "reasons": self._candidate_reason_signals(
+                    structured=structured,
+                    member_count=len(members),
+                    distinct_session_count=len(distinct_sessions),
+                    distinct_day_count=len(distinct_days),
+                    unresolved_count=unresolved_count,
+                    recurrence_total=total_recurrence,
+                    score_breakdown=score_breakdown,
+                ),
+            }
+            items.append(candidate)
+
+        items.sort(
+            key=lambda item: (
+                float(item["candidate_score"]),
+                int(item["recurrence_total"]),
+                int(item["member_count"]),
+                int(item["distinct_session_count"]),
+            ),
+            reverse=True,
+        )
+        ranked = items[:clamped_limit]
+        return {
+            "count": len(ranked),
+            "limit": clamped_limit,
+            "filters": {
+                "workspace_id": workspace_id,
+                "project_id": project_id,
+                "include_resolved": include_resolved,
+                "distillation_status": requested_status.value,
+            },
+            "source_count": len(entries),
+            "cluster_count": len(items),
+            "items": ranked,
+        }
 
     def _validate_write_payload(self, payload: dict[str, Any]) -> None:
         content = payload.get("content")
