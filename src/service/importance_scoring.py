@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from math import log1p
 from typing import Any, Optional
 
 from ..config import MemoryScope
@@ -325,4 +326,138 @@ def build_importance_metadata(
         }
     )
     return metadata
+
+
+def _fast_static_score(metadata: dict[str, Any]) -> float:
+    importance_score = metadata.get("importance_score")
+    importance_signal = None
+    if importance_score is not None:
+        try:
+            importance_signal = _clamp01(float(importance_score) / 100.0, default=0.0)
+        except (TypeError, ValueError):
+            importance_signal = None
+
+    novelty_signal = None
+    if metadata.get("novelty_score") is not None:
+        novelty_signal = _clamp01(metadata.get("novelty_score"), default=0.0)
+
+    confidence_source = metadata.get("confidence")
+    if confidence_source is None:
+        confidence_source = metadata.get("predictive_confidence")
+    if confidence_source is None:
+        confidence_source = metadata.get("predictive_confidence_before")
+    confidence_signal = None
+    if confidence_source is not None:
+        confidence_signal = _clamp01(confidence_source, default=0.0)
+
+    impact_signal = None
+    if metadata.get("negative_impact") is not None:
+        impact_signal = _clamp01(metadata.get("negative_impact"), default=0.0)
+
+    weighted_total = 0.0
+    weights = 0.0
+    for signal, weight in (
+        (importance_signal, 0.45),
+        (novelty_signal, 0.25),
+        (confidence_signal, 0.20),
+        (impact_signal, 0.10),
+    ):
+        if signal is None:
+            continue
+        weighted_total += signal * weight
+        weights += weight
+
+    if weights == 0.0:
+        return 0.35
+    return _clamp01(weighted_total / weights, default=0.35)
+
+
+def _fast_frequency_score(recurrence_count: int) -> float:
+    occurrences = max(1, int(recurrence_count))
+    if occurrences <= 1:
+        return 0.0
+    return _clamp01(log1p(occurrences - 1) / log1p(7), default=0.0)
+
+
+def _fast_quality_score(metadata: dict[str, Any], recurrence_count: int) -> float:
+    signals: list[float] = []
+
+    for key, ceiling in (
+        ("distinct_session_count", 4),
+        ("distinct_task_count", 4),
+        ("distinct_day_count", 3),
+        ("outcome_reuse_count", 3),
+    ):
+        value = metadata.get(key)
+        if value is None:
+            continue
+        try:
+            numeric = max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+        signals.append(_clamp01(numeric / ceiling, default=0.0))
+
+    base_quality = 0.35 if int(recurrence_count) > 1 else 0.0
+    if not signals:
+        return base_quality
+    return _clamp01(max(base_quality, sum(signals) / len(signals)), default=base_quality)
+
+
+def _fast_noise_penalty(metadata: dict[str, Any], *, event_type: str) -> float:
+    direct_penalty = metadata.get("noise_penalty")
+    if direct_penalty is not None:
+        return _clamp01(direct_penalty, default=0.0)
+
+    penalties: list[float] = []
+    if str(event_type).strip().lower() == "retry":
+        penalties.append(0.15)
+
+    for key in ("duplicate_ratio", "same_session_ratio", "loop_ratio"):
+        value = metadata.get(key)
+        if value is None:
+            continue
+        penalties.append(_clamp01(value, default=0.0))
+
+    burst_retry_count = metadata.get("burst_retry_count")
+    if burst_retry_count is not None:
+        penalties.append(_clamp01(int(burst_retry_count) / 5.0, default=0.0))
+
+    if not penalties:
+        return 0.0
+    return _clamp01(sum(penalties) / len(penalties), default=0.0)
+
+
+def build_fast_selection_metadata(
+    *,
+    metadata: dict[str, Any] | None,
+    recurrence_count: int,
+    event_type: str = "note",
+    alpha: float = 0.65,
+) -> dict[str, Any]:
+    normalized_metadata = dict(metadata or {})
+    meta_score = _fast_static_score(normalized_metadata)
+    frequency_score = _fast_frequency_score(recurrence_count)
+    quality_score = _fast_quality_score(normalized_metadata, recurrence_count)
+    recurrence_score = _clamp01(frequency_score * quality_score, default=0.0)
+    noise_penalty = _fast_noise_penalty(normalized_metadata, event_type=event_type)
+    recurrence_boost = _clamp01(
+        _clamp01(alpha, default=0.65)
+        * recurrence_score
+        * (1.0 - meta_score)
+        * (1.0 - noise_penalty),
+        default=0.0,
+    )
+    selection_score = _clamp01(meta_score + recurrence_boost, default=0.0)
+
+    return {
+        "formula_version": "fast-memory-v1",
+        "alpha": round(_clamp01(alpha, default=0.65), 6),
+        "meta_score": round(meta_score, 6),
+        "recurrence_frequency": round(frequency_score, 6),
+        "recurrence_quality": round(quality_score, 6),
+        "recurrence_score": round(recurrence_score, 6),
+        "noise_penalty": round(noise_penalty, 6),
+        "recurrence_boost": round(recurrence_boost, 6),
+        "selection_score": round(selection_score, 6),
+    }
 

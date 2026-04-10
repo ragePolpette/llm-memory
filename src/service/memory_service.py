@@ -34,6 +34,7 @@ from ..storage.sqlite_store import SQLiteMemoryStore
 from ..vectordb.sqlite_vector_store import SQLiteVectorStore
 from ..interop.memory_markdown import parse_memory_markdown, render_memory_markdown
 from .importance_scoring import (
+    build_fast_selection_metadata,
     build_importance_metadata,
     has_inference_signal,
     has_surprise_signal,
@@ -505,6 +506,28 @@ class MemoryService:
                     missing_fields=[key],
                     retryable=False,
                 )
+
+        metadata = payload.get("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise MemoryInputError(
+                code="INVALID_FIELD_TYPE",
+                message="metadata must be an object when provided.",
+                missing_fields=["metadata"],
+                retryable=False,
+            )
+
+        recurrence_count = payload.get("recurrence_count")
+        if recurrence_count is not None:
+            try:
+                if int(recurrence_count) < 1:
+                    raise ValueError("too-small")
+            except (TypeError, ValueError) as exc:
+                raise MemoryInputError(
+                    code="INVALID_RECURRENCE_COUNT",
+                    message="recurrence_count must be an integer greater than or equal to 1.",
+                    missing_fields=["recurrence_count"],
+                    retryable=False,
+                ) from exc
 
     @staticmethod
     def _preview_text(value: Any, *, limit: int = 240) -> Any:
@@ -1252,6 +1275,20 @@ class MemoryService:
             raise PermissionError("Write denied by scope policy")
 
         now_iso = utc_now_iso()
+        metadata = dict(payload.get("metadata", {}))
+        computed_selection = build_fast_selection_metadata(
+            metadata=metadata,
+            recurrence_count=int(payload.get("recurrence_count", 1)),
+            event_type=str(payload.get("event_type", "note")).strip(),
+        )
+        explicit_selection_score = payload.get("selection_score")
+        if explicit_selection_score is None:
+            selection_score = computed_selection["selection_score"]
+        else:
+            selection_score = float(explicit_selection_score)
+            computed_selection["selection_score_override"] = round(selection_score, 6)
+        metadata["fast_memory_scoring"] = computed_selection
+
         entry = FastMemoryEntry(
             workspace_id=scope.workspace_id,
             project_id=scope.project_id,
@@ -1262,7 +1299,7 @@ class MemoryService:
             content=payload["content"].strip(),
             context=payload.get("context", ""),
             tags=payload.get("tags", []),
-            metadata=dict(payload.get("metadata", {})),
+            metadata=metadata,
             source=payload.get("source", "mcp"),
             resolved=bool(payload.get("resolved", False)),
             distillation_status=FastMemoryDistillationStatus(
@@ -1273,7 +1310,7 @@ class MemoryService:
             recurrence_count=int(payload.get("recurrence_count", 1)),
             first_seen_at=payload.get("first_seen_at", now_iso),
             last_seen_at=payload.get("last_seen_at", now_iso),
-            selection_score=payload.get("selection_score"),
+            selection_score=selection_score,
             created_at=payload.get("created_at", now_iso),
             updated_at=payload.get("updated_at", now_iso),
         )
@@ -1304,6 +1341,7 @@ class MemoryService:
             "distillation_status": entry.distillation_status.value,
             "workspace_id": entry.workspace_id,
             "project_id": entry.project_id,
+            "selection_score": entry.selection_score,
         }
         self._log_activity(
             "fast_write_out",
