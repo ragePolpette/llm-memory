@@ -76,6 +76,11 @@ Operational memory tools:
 - `memory.log_fast`
 - `memory.list_fast`
 - `memory.get_fast`
+- `memory.rank_fast_candidates`
+- `memory.prepare_fast_distillation`
+- `memory.summarize_fast`
+- `memory.discard_fast`
+- `memory.promote_fast`
 - `memory.search`
 - `memory.get`
 - `memory.invalidate`

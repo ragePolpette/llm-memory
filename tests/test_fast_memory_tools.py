@@ -179,6 +179,8 @@ async def test_memory_about_exposes_fast_memory_tools(runtime):
     assert "memory.log_fast" in payload["tool_map"]["generic"]
     assert "memory.list_fast" in payload["tool_map"]["generic"]
     assert "memory.get_fast" in payload["tool_map"]["generic"]
+    assert "memory.rank_fast_candidates" in payload["tool_map"]["generic"]
+    assert "memory.prepare_fast_distillation" in payload["tool_map"]["generic"]
     assert "memory.summarize_fast" in payload["tool_map"]["generic"]
     assert "memory.discard_fast" in payload["tool_map"]["generic"]
     assert "memory.promote_fast" in payload["tool_map"]["generic"]
@@ -310,3 +312,122 @@ async def test_promote_fast_memory_tool_creates_strong_memory(runtime):
     assert promote_payload["distillation_status"] == "promoted"
     assert promote_payload["target_tier"] == "tier-2"
     assert promote_payload["promoted_entry_id"]
+
+
+@pytest.mark.asyncio
+async def test_rank_fast_candidates_tool_returns_clustered_candidates(runtime):
+    server = Server("llm-memory-fast-tools")
+    register_tools(server, runtime.service)
+    handler = server.request_handlers[CallToolRequest]
+
+    for session_id, user_ref in (("session-a", "user:y"), ("session-b", "user:z")):
+        await handler(
+            CallToolRequest(
+                params={
+                    "name": "memory.log_fast",
+                    "arguments": {
+                        "agent_id": "agent-fast-tool",
+                        "content": f"L'utente {user_ref} vedeva solo il menu x.",
+                        "event_type": "incident",
+                        "session_id": session_id,
+                        "kind": "bug",
+                        "product_area": "authorization",
+                        "component": "menu-engine",
+                        "entity_refs": [user_ref, "menu:x"],
+                        "recurrence_count": 2,
+                    },
+                }
+            )
+        )
+
+    result = await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.rank_fast_candidates",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "limit": 10,
+                },
+            }
+        )
+    )
+    payload = _tool_payload(result)
+
+    assert payload["candidates"]["count"] >= 1
+    first = payload["candidates"]["items"][0]
+    assert first["member_count"] >= 2
+    assert first["component"] == "menu-engine"
+
+
+@pytest.mark.asyncio
+async def test_prepare_fast_distillation_tool_requires_feature_flag(runtime):
+    server = Server("llm-memory-fast-tools")
+    register_tools(server, runtime.service)
+    handler = server.request_handlers[CallToolRequest]
+
+    result = await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.prepare_fast_distillation",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "reason": "prepare top candidate pack",
+                },
+            }
+        )
+    )
+    payload = _tool_payload(result)
+
+    assert result.root.isError is True
+    assert payload["error_type"] == "permission_error"
+    assert "FAST_MEMORY_AGENT_DISTILLATION_ENABLED" in payload["message"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_fast_distillation_tool_returns_candidate_pack_when_enabled(runtime):
+    runtime.service.config.fast_memory_agent_distillation_enabled = True
+    server = Server("llm-memory-fast-tools")
+    register_tools(server, runtime.service)
+    handler = server.request_handlers[CallToolRequest]
+
+    await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.log_fast",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "content": "L'utente y vedeva solo il menu x.",
+                    "context": "menu troubleshooting",
+                    "event_type": "incident",
+                    "session_id": "session-a",
+                    "kind": "bug",
+                    "product_area": "authorization",
+                    "component": "menu-engine",
+                    "entity_refs": ["user:y", "menu:x"],
+                    "action_taken": "Update tabella permessi utente.",
+                    "outcome": "Menu ripristinati.",
+                    "generalizable": "yes",
+                    "recurrence_count": 2,
+                },
+            }
+        )
+    )
+
+    result = await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.prepare_fast_distillation",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "reason": "prepare agentic distillation",
+                    "top_k": 1,
+                },
+            }
+        )
+    )
+    payload = _tool_payload(result)
+
+    assert payload["prepared_count"] == 1
+    assert payload["protection"]["mode"] == "prepare_only"
+    assert "Return JSON only" in payload["prompt"]
+    assert payload["candidates"][0]["source_entries"][0]["structured_context"]["component"] == "menu-engine"

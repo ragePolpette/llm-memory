@@ -850,6 +850,186 @@ class MemoryService:
             "items": ranked,
         }
 
+    def rank_fast_candidates_for_actor(
+        self,
+        *,
+        actor: ActorContext,
+        limit: int = 10,
+        include_resolved: bool = False,
+        distillation_status: Optional[str] = None,
+    ) -> dict[str, Any]:
+        return self.admin_rank_fast_candidates(
+            workspace_id=actor.workspace_id,
+            project_id=actor.project_id,
+            limit=limit,
+            include_resolved=include_resolved,
+            distillation_status=distillation_status,
+        )
+
+    def prepare_fast_distillation(
+        self,
+        *,
+        actor: ActorContext,
+        reason: str,
+        cluster_id: Optional[str] = None,
+        entry_id: Optional[str] = None,
+        top_k: int = 1,
+        include_resolved: bool = False,
+        distillation_status: Optional[str] = None,
+    ) -> dict[str, Any]:
+        if not self.config.fast_memory_agent_distillation_enabled:
+            raise PermissionError(
+                "Fast-memory agent distillation is disabled. Set FAST_MEMORY_AGENT_DISTILLATION_ENABLED=true to enable."
+            )
+
+        normalized_reason = self._require_non_empty_reason(reason)
+        candidate_limit = max(1, min(int(top_k), 10))
+        ranked = self.rank_fast_candidates_for_actor(
+            actor=actor,
+            limit=max(candidate_limit * 5, 10),
+            include_resolved=include_resolved,
+            distillation_status=distillation_status,
+        )
+        candidates = ranked["items"]
+
+        if cluster_id:
+            candidates = [candidate for candidate in candidates if candidate["cluster_id"] == cluster_id]
+        elif entry_id:
+            candidates = [candidate for candidate in candidates if entry_id in candidate["member_entry_ids"]]
+        else:
+            candidates = candidates[:candidate_limit]
+
+        if not candidates:
+            return {
+                "prepared_count": 0,
+                "reason": normalized_reason,
+                "filters": ranked["filters"],
+                "protection": {
+                    "enabled": True,
+                    "apply_supported": False,
+                    "mode": "prepare_only",
+                },
+                "prompt": None,
+                "contract": None,
+                "candidates": [],
+            }
+
+        prepared_candidates: list[dict[str, Any]] = []
+        for candidate in candidates[:candidate_limit]:
+            source_entries: list[dict[str, Any]] = []
+            for member_entry_id in candidate["member_entry_ids"]:
+                entry = self.store.get_fast_entry(member_entry_id)
+                if entry is None or not self._can_read_fast(actor, entry):
+                    continue
+                source_entries.append(
+                    {
+                        "id": entry.id,
+                        "event_type": entry.event_type,
+                        "content": entry.content,
+                        "context": entry.context,
+                        "tags": list(entry.tags),
+                        "resolved": entry.resolved,
+                        "selection_score": entry.selection_score,
+                        "recurrence_count": entry.recurrence_count,
+                        "session_id": entry.session_id,
+                        "created_at": entry.created_at.isoformat()
+                        if isinstance(entry.created_at, datetime)
+                        else str(entry.created_at),
+                        "updated_at": entry.updated_at.isoformat()
+                        if isinstance(entry.updated_at, datetime)
+                        else str(entry.updated_at),
+                        "structured_context": self._fast_structured_context(entry),
+                        "metadata": {
+                            "fast_memory_scoring": entry.metadata.get("fast_memory_scoring"),
+                            "last_fast_memory_distillation": entry.metadata.get("last_fast_memory_distillation"),
+                        },
+                    }
+                )
+
+            prepared_candidates.append(
+                {
+                    "cluster_id": candidate["cluster_id"],
+                    "candidate_score": candidate["candidate_score"],
+                    "reasons": candidate["reasons"],
+                    "representative_entry_id": candidate["representative_entry_id"],
+                    "member_count": candidate["member_count"],
+                    "recurrence_total": candidate["recurrence_total"],
+                    "content_preview": candidate["content_preview"],
+                    "context_preview": candidate["context_preview"],
+                    "component": candidate.get("component"),
+                    "product_area": candidate.get("product_area"),
+                    "feature": candidate.get("feature"),
+                    "entity_refs": candidate.get("entity_refs", []),
+                    "source_entries": source_entries,
+                }
+            )
+
+        contract = {
+            "type": "json",
+            "schema": {
+                "decisions": [
+                    {
+                        "cluster_id": "string",
+                        "action": "promote|summarize_only|discard|needs_review",
+                        "title": "string",
+                        "summary": "string",
+                        "strong_memory": {
+                            "content": "string",
+                            "context": "string",
+                            "type": "fact|decision|assumption|unknown",
+                            "tier": "tier-1|tier-2|tier-3",
+                            "visibility": "private|shared|global",
+                            "tags": ["string"],
+                            "metadata": {"key": "value"},
+                        },
+                        "explanation": "string",
+                        "confidence": "0..1",
+                        "source_entry_ids": ["string"],
+                        "open_questions": ["string"],
+                    }
+                ]
+            },
+        }
+        prompt = (
+            "You are distilling fast-memory candidate clusters into strong project memory.\n"
+            "Work only from the provided candidate pack.\n"
+            "Generalize from episodic details into reusable project knowledge when justified.\n"
+            "If the material is noisy, user-specific, or not reusable, prefer summarize_only, discard, or needs_review.\n"
+            "Preserve the diagnostic path: symptom, technical cause, action taken, and why the fix works.\n"
+            "Avoid copying raw user-specific details unless they are necessary evidence.\n"
+            "Return JSON only, matching the provided contract exactly.\n"
+            "Do not apply changes directly; this is a preparation step."
+        )
+
+        self.store.add_audit(
+            AuditEvent(
+                action="fast_distillation_prepare",
+                actor=actor.agent_id,
+                reason=normalized_reason,
+                payload={
+                    "cluster_id": cluster_id,
+                    "entry_id": entry_id,
+                    "top_k": candidate_limit,
+                    "prepared_count": len(prepared_candidates),
+                    "include_resolved": include_resolved,
+                    "distillation_status": ranked["filters"]["distillation_status"],
+                },
+            )
+        )
+        return {
+            "prepared_count": len(prepared_candidates),
+            "reason": normalized_reason,
+            "filters": ranked["filters"],
+            "protection": {
+                "enabled": True,
+                "apply_supported": False,
+                "mode": "prepare_only",
+            },
+            "prompt": prompt,
+            "contract": contract,
+            "candidates": prepared_candidates,
+        }
+
     def _validate_write_payload(self, payload: dict[str, Any]) -> None:
         content = payload.get("content")
         if not isinstance(content, str) or not content.strip():
