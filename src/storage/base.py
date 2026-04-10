@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from ..models import AuditEvent, EmbeddingVersion, MemoryEntry, ScopeRef
+from ..models import AuditEvent, EmbeddingVersion, FastMemoryDistillationStatus, FastMemoryEntry, MemoryEntry, ScopeRef
 
 
 class MetadataStore(ABC):
@@ -49,4 +49,43 @@ class MetadataStore(ABC):
 
     @abstractmethod
     def add_audit(self, event: AuditEvent) -> int:
+        pass
+
+    @abstractmethod
+    def add_fast_entry(self, entry: FastMemoryEntry) -> None:
+        pass
+
+    @abstractmethod
+    def update_fast_entry(self, entry: FastMemoryEntry) -> None:
+        pass
+
+    @abstractmethod
+    def get_fast_entry(self, entry_id: str) -> Optional[FastMemoryEntry]:
+        pass
+
+    @abstractmethod
+    def list_fast_entries(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        resolved: Optional[bool] = None,
+        distillation_status: FastMemoryDistillationStatus | None = None,
+        limit: int = 100,
+    ) -> list[FastMemoryEntry]:
+        pass
+
+    @abstractmethod
+    def count_fast_entries(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        resolved: Optional[bool] = None,
+        distillation_status: FastMemoryDistillationStatus | None = None,
+    ) -> int:
         pass

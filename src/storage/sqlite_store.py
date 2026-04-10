@@ -15,6 +15,8 @@ from ..models import (
     EntryLink,
     EntryStatus,
     EntryType,
+    FastMemoryDistillationStatus,
+    FastMemoryEntry,
     MemoryEntry,
     ProjectRecord,
     ScopeRef,
@@ -122,6 +124,38 @@ class SQLiteMemoryStore:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_audit_entry ON audit_log(entry_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS fast_memory_entries (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    user_id TEXT,
+                    session_id TEXT,
+                    event_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    context TEXT NOT NULL,
+                    tags_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    resolved INTEGER NOT NULL DEFAULT 0,
+                    distillation_status TEXT NOT NULL,
+                    distilled_at TEXT,
+                    cluster_id TEXT,
+                    recurrence_count INTEGER NOT NULL DEFAULT 1,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    selection_score REAL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_fast_memory_scope
+                    ON fast_memory_entries(workspace_id, project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_fast_memory_status
+                    ON fast_memory_entries(distillation_status, resolved, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_fast_memory_event
+                    ON fast_memory_entries(event_type, agent_id, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS embedding_versions (
                     version_id TEXT PRIMARY KEY,
@@ -571,6 +605,177 @@ class SQLiteMemoryStore:
             )
             return int(cur.lastrowid)
 
+    def add_fast_entry(self, entry: FastMemoryEntry) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO fast_memory_entries (
+                    id, workspace_id, project_id, agent_id, user_id, session_id,
+                    event_type, content, context, tags_json, metadata_json, source,
+                    resolved, distillation_status, distilled_at, cluster_id,
+                    recurrence_count, first_seen_at, last_seen_at,
+                    selection_score, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry.id,
+                    entry.workspace_id,
+                    entry.project_id,
+                    entry.agent_id,
+                    entry.user_id,
+                    entry.session_id,
+                    entry.event_type,
+                    entry.content,
+                    entry.context,
+                    json.dumps(entry.tags, ensure_ascii=True),
+                    json.dumps(entry.metadata, ensure_ascii=True, sort_keys=True),
+                    entry.source,
+                    int(entry.resolved),
+                    entry.distillation_status.value,
+                    self._to_iso(entry.distilled_at) if entry.distilled_at is not None else None,
+                    entry.cluster_id,
+                    int(entry.recurrence_count),
+                    self._to_iso(entry.first_seen_at),
+                    self._to_iso(entry.last_seen_at),
+                    entry.selection_score,
+                    self._to_iso(entry.created_at),
+                    self._to_iso(entry.updated_at),
+                ),
+            )
+
+    def update_fast_entry(self, entry: FastMemoryEntry) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE fast_memory_entries
+                SET workspace_id=?, project_id=?, agent_id=?, user_id=?, session_id=?,
+                    event_type=?, content=?, context=?, tags_json=?, metadata_json=?, source=?,
+                    resolved=?, distillation_status=?, distilled_at=?, cluster_id=?,
+                    recurrence_count=?, first_seen_at=?, last_seen_at=?,
+                    selection_score=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    entry.workspace_id,
+                    entry.project_id,
+                    entry.agent_id,
+                    entry.user_id,
+                    entry.session_id,
+                    entry.event_type,
+                    entry.content,
+                    entry.context,
+                    json.dumps(entry.tags, ensure_ascii=True),
+                    json.dumps(entry.metadata, ensure_ascii=True, sort_keys=True),
+                    entry.source,
+                    int(entry.resolved),
+                    entry.distillation_status.value,
+                    self._to_iso(entry.distilled_at) if entry.distilled_at is not None else None,
+                    entry.cluster_id,
+                    int(entry.recurrence_count),
+                    self._to_iso(entry.first_seen_at),
+                    self._to_iso(entry.last_seen_at),
+                    entry.selection_score,
+                    self._to_iso(entry.updated_at),
+                    entry.id,
+                ),
+            )
+
+    def get_fast_entry(self, entry_id: str) -> Optional[FastMemoryEntry]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM fast_memory_entries WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._fast_entry_from_row(row)
+
+    def list_fast_entries(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        resolved: Optional[bool] = None,
+        distillation_status: FastMemoryDistillationStatus | None = None,
+        limit: int = 100,
+    ) -> list[FastMemoryEntry]:
+        sql = ["SELECT * FROM fast_memory_entries WHERE 1 = 1"]
+        params: list[object] = []
+
+        if workspace_id is not None:
+            sql.append("AND workspace_id = ?")
+            params.append(workspace_id)
+
+        if project_id is not None:
+            sql.append("AND project_id = ?")
+            params.append(project_id)
+
+        if agent_id is not None:
+            sql.append("AND agent_id = ?")
+            params.append(agent_id)
+
+        if event_type is not None:
+            sql.append("AND event_type = ?")
+            params.append(event_type)
+
+        if resolved is not None:
+            sql.append("AND resolved = ?")
+            params.append(int(resolved))
+
+        if distillation_status is not None:
+            sql.append("AND distillation_status = ?")
+            params.append(distillation_status.value)
+
+        sql.append("ORDER BY created_at DESC, id DESC LIMIT ?")
+        params.append(max(1, int(limit)))
+
+        with self._conn() as conn:
+            rows = conn.execute(" ".join(sql), params).fetchall()
+            return [self._fast_entry_from_row(row) for row in rows]
+
+    def count_fast_entries(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        resolved: Optional[bool] = None,
+        distillation_status: FastMemoryDistillationStatus | None = None,
+    ) -> int:
+        sql = ["SELECT COUNT(1) AS c FROM fast_memory_entries WHERE 1 = 1"]
+        params: list[object] = []
+
+        if workspace_id is not None:
+            sql.append("AND workspace_id = ?")
+            params.append(workspace_id)
+
+        if project_id is not None:
+            sql.append("AND project_id = ?")
+            params.append(project_id)
+
+        if agent_id is not None:
+            sql.append("AND agent_id = ?")
+            params.append(agent_id)
+
+        if event_type is not None:
+            sql.append("AND event_type = ?")
+            params.append(event_type)
+
+        if resolved is not None:
+            sql.append("AND resolved = ?")
+            params.append(int(resolved))
+
+        if distillation_status is not None:
+            sql.append("AND distillation_status = ?")
+            params.append(distillation_status.value)
+
+        with self._conn() as conn:
+            row = conn.execute(" ".join(sql), params).fetchone()
+            return int(row["c"] if row else 0)
+
     def count_entries(
         self,
         *,
@@ -785,6 +990,33 @@ class SQLiteMemoryStore:
             embedding_version_id=row["embedding_version_id"],
             encrypted=bool(row["encrypted"]),
             redacted=bool(row["redacted"]),
+        )
+
+    @staticmethod
+    def _fast_entry_from_row(row: sqlite3.Row) -> FastMemoryEntry:
+        return FastMemoryEntry(
+            id=row["id"],
+            workspace_id=row["workspace_id"],
+            project_id=row["project_id"],
+            agent_id=row["agent_id"],
+            user_id=row["user_id"],
+            session_id=row["session_id"],
+            event_type=row["event_type"],
+            content=row["content"],
+            context=row["context"],
+            tags=json.loads(row["tags_json"]),
+            metadata=json.loads(row["metadata_json"]),
+            source=row["source"],
+            resolved=bool(row["resolved"]),
+            distillation_status=FastMemoryDistillationStatus(row["distillation_status"]),
+            distilled_at=row["distilled_at"],
+            cluster_id=row["cluster_id"],
+            recurrence_count=int(row["recurrence_count"]),
+            first_seen_at=row["first_seen_at"],
+            last_seen_at=row["last_seen_at"],
+            selection_score=float(row["selection_score"]) if row["selection_score"] is not None else None,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     @staticmethod
