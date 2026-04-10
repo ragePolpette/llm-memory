@@ -27,6 +27,9 @@ def test_log_fast_persists_entry_and_audits(service):
     assert entry.event_type == "fix_attempt"
     assert entry.session_id == "session-1"
     assert entry.metadata["ticket"] == "FAST-1"
+    assert entry.selection_score is not None
+    assert entry.metadata["fast_memory_scoring"]["formula_version"] == "fast-memory-v1"
+    assert entry.metadata["fast_memory_scoring"]["selection_score"] == entry.selection_score
 
     audits = service.store.list_audit(entry_id=result["entry_id"], limit=10)
     assert any(audit.action == "fast_write" and audit.reason == "log_fast" for audit in audits)
@@ -43,6 +46,56 @@ def test_log_fast_rejects_invalid_payload(service):
             },
             actor,
         )
+
+
+def test_log_fast_rejects_invalid_recurrence_count(service):
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+
+    with pytest.raises(MemoryInputError, match="INVALID_RECURRENCE_COUNT"):
+        service.log_fast(
+            {
+                "content": "Burst di retry non normalizzato.",
+                "agent_id": actor.agent_id,
+                "recurrence_count": 0,
+            },
+            actor,
+        )
+
+
+def test_log_fast_computes_higher_score_for_recurrent_cross_session_pattern(service):
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+
+    single = service.log_fast(
+        {
+            "content": "Nota singola su un errore raro.",
+            "agent_id": actor.agent_id,
+            "event_type": "note",
+            "metadata": {"importance_score": 20},
+        },
+        actor,
+    )
+    recurrent = service.log_fast(
+        {
+            "content": "Errore ricorrente riapparso su sessioni diverse.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "recurrence_count": 5,
+            "metadata": {
+                "importance_score": 20,
+                "distinct_session_count": 3,
+                "distinct_day_count": 2,
+            },
+        },
+        actor,
+    )
+
+    single_entry = service.get_fast(single["entry_id"], actor)
+    recurrent_entry = service.get_fast(recurrent["entry_id"], actor)
+
+    assert single_entry is not None
+    assert recurrent_entry is not None
+    assert recurrent_entry.selection_score > single_entry.selection_score
+    assert recurrent_entry.metadata["fast_memory_scoring"]["recurrence_boost"] > 0.0
 
 
 @pytest.mark.asyncio
