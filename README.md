@@ -111,6 +111,18 @@ Run local HTTP transport:
 python -m src.mcp_server.http_server
 ```
 
+Prepare a fast-memory distillation pack from the CLI:
+
+```bash
+llm-memory-fast-distill prepare --agent-id local-cli --reason "prepare top candidate" --top-k 1
+```
+
+Launch a local harness with the fixed prompt:
+
+```bash
+llm-memory-fast-distill run --agent-id local-cli --reason "distill top candidate" --top-k 1 --harness codex
+```
+
 Useful local endpoints:
 
 - `GET /health`
