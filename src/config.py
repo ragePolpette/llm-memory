@@ -148,6 +148,9 @@ class Config(BaseModel):
     self_eval_enforced: bool = Field(
         default_factory=lambda: _env_bool("MEMORY_SELF_EVAL_ENFORCED", False)
     )
+    fast_memory_agent_distillation_enabled: bool = Field(
+        default_factory=lambda: _env_bool("FAST_MEMORY_AGENT_DISTILLATION_ENABLED", False)
+    )
 
     # Ranking
     ranking_similarity_weight: float = Field(
@@ -301,6 +304,7 @@ class Config(BaseModel):
             },
             "multi_project_enabled": self.multi_project_enabled,
             "self_eval_enforced": self.self_eval_enforced,
+            "fast_memory_agent_distillation_enabled": self.fast_memory_agent_distillation_enabled,
             "allow_outbound_network": self.allow_outbound_network,
         }
 
