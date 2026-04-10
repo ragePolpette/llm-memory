@@ -257,6 +257,9 @@ class MemoryService:
                 "active_entries": self.store.count_entries(exclude_invalidated=True),
                 "invalidated_entries": self.store.count_entries(status=EntryStatus.INVALIDATED),
                 "invalidation_markers": self.store.count_entries(entry_type=EntryType.INVALIDATED),
+                "fast_entries_total": self.store.count_fast_entries(),
+                "fast_open_entries": self.store.count_fast_entries(resolved=False),
+                "fast_resolved_entries": self.store.count_fast_entries(resolved=True),
                 "projects_total": len(self.store.list_projects()),
                 "audit_events_total": self.store.count_audit(),
             },
@@ -276,6 +279,20 @@ class MemoryService:
             },
             "embedding": {
                 "active_version": active_version.model_dump(mode="json") if active_version else None,
+            },
+            "fast_memory": {
+                "pending": self.store.count_fast_entries(
+                    distillation_status=FastMemoryDistillationStatus.PENDING,
+                ),
+                "summarized": self.store.count_fast_entries(
+                    distillation_status=FastMemoryDistillationStatus.SUMMARIZED,
+                ),
+                "promoted": self.store.count_fast_entries(
+                    distillation_status=FastMemoryDistillationStatus.PROMOTED,
+                ),
+                "discarded": self.store.count_fast_entries(
+                    distillation_status=FastMemoryDistillationStatus.DISCARDED,
+                ),
             },
             "latest_audit_at": (
                 latest_audit.created_at.isoformat()
@@ -349,6 +366,15 @@ class MemoryService:
                         scope_level=ScopeLevel.PROJECT.value,
                         exclude_invalidated=True,
                     ),
+                    "fast_entry_count": self.store.count_fast_entries(
+                        workspace_id=project.workspace_id,
+                        project_id=project.project_id,
+                    ),
+                    "open_fast_entry_count": self.store.count_fast_entries(
+                        workspace_id=project.workspace_id,
+                        project_id=project.project_id,
+                        resolved=False,
+                    ),
                 }
             )
         return {
@@ -357,6 +383,61 @@ class MemoryService:
             "workspace_id": workspace_id,
             "items": items,
         }
+
+    def admin_list_fast(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        resolved: Optional[bool] = None,
+        distillation_status: Optional[str] = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        clamped_limit = max(1, min(int(limit), 500))
+        requested_status = (
+            FastMemoryDistillationStatus(str(distillation_status).strip().lower())
+            if distillation_status is not None and str(distillation_status).strip()
+            else None
+        )
+        entries = self.store.list_fast_entries(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            agent_id=agent_id,
+            event_type=event_type,
+            resolved=resolved,
+            distillation_status=requested_status,
+            limit=clamped_limit,
+        )
+        items = []
+        for entry in entries:
+            payload = entry.model_dump(mode="json")
+            payload["content_preview"] = self._preview_text(entry.content, limit=240)
+            payload["context_preview"] = self._preview_text(entry.context, limit=160)
+            items.append(payload)
+        return {
+            "count": len(items),
+            "limit": clamped_limit,
+            "filters": {
+                "workspace_id": workspace_id,
+                "project_id": project_id,
+                "agent_id": agent_id,
+                "event_type": event_type,
+                "resolved": resolved,
+                "distillation_status": requested_status.value if requested_status is not None else None,
+            },
+            "items": items,
+        }
+
+    def admin_get_fast(self, entry_id: str) -> Optional[dict[str, Any]]:
+        entry = self.store.get_fast_entry(entry_id)
+        if entry is None:
+            return None
+        payload = entry.model_dump(mode="json")
+        payload["content_preview"] = self._preview_text(entry.content, limit=240)
+        payload["context_preview"] = self._preview_text(entry.context, limit=160)
+        return payload
 
     def _validate_write_payload(self, payload: dict[str, Any]) -> None:
         content = payload.get("content")

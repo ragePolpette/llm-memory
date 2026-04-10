@@ -200,6 +200,17 @@ def _parse_limit(raw_value: str | None, *, default: int = 100, minimum: int = 1,
     return limit
 
 
+def _parse_optional_bool(raw_value: str | None) -> bool | None:
+    if raw_value is None or not str(raw_value).strip():
+        return None
+    normalized = str(raw_value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError("resolved must be a boolean value")
+
+
 async def _read_request_body(receive: Receive) -> tuple[bytes, list[dict[str, Any]]]:
     messages: list[dict[str, Any]] = []
     body_chunks: list[bytes] = []
@@ -432,11 +443,67 @@ async def admin_projects(request: Request):
     )
 
 
+async def admin_fast_memory(request: Request):
+    if runtime is None:
+        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+    try:
+        limit = _parse_limit(request.query_params.get("limit"), default=100)
+        payload = runtime.service.admin_list_fast(
+            workspace_id=request.query_params.get("workspace_id"),
+            project_id=request.query_params.get("project_id"),
+            agent_id=request.query_params.get("agent_id"),
+            event_type=request.query_params.get("event_type"),
+            resolved=_parse_optional_bool(request.query_params.get("resolved")),
+            distillation_status=request.query_params.get("distillation_status"),
+            limit=limit,
+        )
+    except ValueError as exc:
+        return _admin_bad_request(str(exc))
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "llm-memory",
+            "api": "v2",
+            "fast_memory": payload,
+        }
+    )
+
+
+async def admin_fast_memory_entry(request: Request):
+    if runtime is None:
+        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+    entry_id = str(request.path_params.get("entry_id", "")).strip()
+    if not entry_id:
+        return _admin_bad_request("entry_id is required")
+    payload = runtime.service.admin_get_fast(entry_id)
+    if payload is None:
+        return JSONResponse(
+            {
+                "status": "error",
+                "error": {
+                    "type": "not_found",
+                    "message": f"Fast-memory entry '{entry_id}' was not found",
+                },
+            },
+            status_code=404,
+        )
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "llm-memory",
+            "api": "v2",
+            "entry": payload,
+        }
+    )
+
+
 routes = [
     Route("/health", health, methods=["GET"]),
     Route("/admin/summary", admin_summary, methods=["GET"]),
     Route("/admin/audit", admin_audit, methods=["GET"]),
     Route("/admin/projects", admin_projects, methods=["GET"]),
+    Route("/admin/fast-memory", admin_fast_memory, methods=["GET"]),
+    Route("/admin/fast-memory/{entry_id:str}", admin_fast_memory_entry, methods=["GET"]),
     Route("/mcp", endpoint=streamable_http_app, methods=["GET", "POST", "DELETE"]),
     Route("/sse", sse_legacy_endpoint, methods=["GET"]),
     Mount("/messages/", app=legacy_messages_app),
