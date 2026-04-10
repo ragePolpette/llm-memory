@@ -113,6 +113,7 @@ Useful local endpoints:
 - `GET /admin/audit`
 - `GET /admin/projects`
 - `GET /admin/fast-memory`
+- `GET /admin/fast-memory/candidates`
 - `GET /admin/fast-memory/{entry_id}`
 
 ## Runtime Characteristics
