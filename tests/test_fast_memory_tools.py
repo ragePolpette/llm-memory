@@ -130,3 +130,134 @@ async def test_memory_about_exposes_fast_memory_tools(runtime):
     assert "memory.log_fast" in payload["tool_map"]["generic"]
     assert "memory.list_fast" in payload["tool_map"]["generic"]
     assert "memory.get_fast" in payload["tool_map"]["generic"]
+    assert "memory.summarize_fast" in payload["tool_map"]["generic"]
+    assert "memory.discard_fast" in payload["tool_map"]["generic"]
+    assert "memory.promote_fast" in payload["tool_map"]["generic"]
+
+
+@pytest.mark.asyncio
+async def test_summarize_fast_memory_tool_updates_entry(runtime):
+    server = Server("llm-memory-fast-tools")
+    register_tools(server, runtime.service)
+    handler = server.request_handlers[CallToolRequest]
+
+    log_result = await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.log_fast",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "content": "Retry ripetuti sul parser CSV.",
+                    "event_type": "retry",
+                },
+            }
+        )
+    )
+    log_payload = _tool_payload(log_result)
+
+    summarize_result = await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.summarize_fast",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "entry_id": log_payload["entry_id"],
+                    "summary": "Retry rumorosi sul parser CSV senza nuovi segnali.",
+                    "reason": "manual triage",
+                    "cluster_id": "cluster-csv",
+                    "resolved": True,
+                },
+            }
+        )
+    )
+    summarize_payload = _tool_payload(summarize_result)
+
+    assert summarize_payload["success"] is True
+    assert summarize_payload["distillation_status"] == "summarized"
+    assert summarize_payload["cluster_id"] == "cluster-csv"
+    assert summarize_payload["resolved"] is True
+
+
+@pytest.mark.asyncio
+async def test_discard_fast_memory_tool_marks_entry_discarded(runtime):
+    server = Server("llm-memory-fast-tools")
+    register_tools(server, runtime.service)
+    handler = server.request_handlers[CallToolRequest]
+
+    log_result = await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.log_fast",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "content": "Burst locale dello stesso fallback.",
+                    "event_type": "retry",
+                },
+            }
+        )
+    )
+    log_payload = _tool_payload(log_result)
+
+    discard_result = await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.discard_fast",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "entry_id": log_payload["entry_id"],
+                    "reason": "noise-only pattern",
+                },
+            }
+        )
+    )
+    discard_payload = _tool_payload(discard_result)
+
+    assert discard_payload["success"] is True
+    assert discard_payload["distillation_status"] == "discarded"
+
+
+@pytest.mark.asyncio
+async def test_promote_fast_memory_tool_creates_strong_memory(runtime):
+    server = Server("llm-memory-fast-tools")
+    register_tools(server, runtime.service)
+    handler = server.request_handlers[CallToolRequest]
+
+    log_result = await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.log_fast",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "content": "Errore ricorrente nell'import incrementale dopo resume.",
+                    "context": "incident review",
+                    "event_type": "incident",
+                    "recurrence_count": 4,
+                    "metadata": {"importance_score": 35, "distinct_session_count": 3},
+                },
+            }
+        )
+    )
+    log_payload = _tool_payload(log_result)
+
+    promote_result = await handler(
+        CallToolRequest(
+            params={
+                "name": "memory.promote_fast",
+                "arguments": {
+                    "agent_id": "agent-fast-tool",
+                    "entry_id": log_payload["entry_id"],
+                    "reason": "recurring issue became reusable knowledge",
+                    "target_tier": "tier-2",
+                    "memory_type": "fact",
+                    "summary": "L'import incrementale fallisce dopo resume se il checkpoint locale non viene riallineato.",
+                    "confidence": 0.85,
+                },
+            }
+        )
+    )
+    promote_payload = _tool_payload(promote_result)
+
+    assert promote_payload["success"] is True
+    assert promote_payload["distillation_status"] == "promoted"
+    assert promote_payload["target_tier"] == "tier-2"
+    assert promote_payload["promoted_entry_id"]
