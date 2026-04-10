@@ -49,6 +49,8 @@ def _require_explicit_project_scope(name: str, arguments: dict, service: MemoryS
         "memory.log_fast",
         "memory.list_fast",
         "memory.get_fast",
+        "memory.rank_fast_candidates",
+        "memory.prepare_fast_distillation",
         "memory.summarize_fast",
         "memory.discard_fast",
         "memory.promote_fast",
@@ -585,6 +587,53 @@ def register_tools(server: Server, memory_service: MemoryService):
                 },
             ),
             Tool(
+                name="memory.rank_fast_candidates",
+                description=(
+                    "Fase 1 puramente matematica: clusterizza e ordina le fast-memory entries pendenti "
+                    "per guidare la distillazione."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                        "limit": {"type": "integer", "default": 10},
+                        "include_resolved": {"type": "boolean", "default": False},
+                        "distillation_status": {
+                            "type": "string",
+                            "enum": ["pending", "summarized", "promoted", "discarded"],
+                        },
+                    },
+                    "required": ["agent_id"],
+                },
+            ),
+            Tool(
+                name="memory.prepare_fast_distillation",
+                description=(
+                    "Tool protetto di fase 2: prepara un candidate pack e un prompt fisso per la "
+                    "distillazione agentica da eseguire manualmente con Codex, Claude o un harness esterno."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                        "reason": {"type": "string"},
+                        "cluster_id": {"type": "string"},
+                        "entry_id": {"type": "string"},
+                        "top_k": {"type": "integer", "default": 1},
+                        "include_resolved": {"type": "boolean", "default": False},
+                        "distillation_status": {
+                            "type": "string",
+                            "enum": ["pending", "summarized", "promoted", "discarded"],
+                        },
+                    },
+                    "required": ["agent_id", "reason"],
+                },
+            ),
+            Tool(
                 name="memory.summarize_fast",
                 description=(
                     "Segna una fast-memory entry come sintetizzata e salva un summary di distillazione "
@@ -831,7 +880,7 @@ def register_tools(server: Server, memory_service: MemoryService):
                     "multi_project_enabled": bool(memory_service.config.multi_project_enabled),
                     "scope_hierarchy": ["project", "workspace", "global"],
                     "capabilities": [
-                        "list_projects/get_project_info/create_project/scope_overview/add/log_fast/list_fast/get_fast/summarize_fast/discard_fast/promote_fast/search/get/invalidate/promote/reembed/export/import"
+                        "list_projects/get_project_info/create_project/scope_overview/add/log_fast/list_fast/get_fast/rank_fast_candidates/prepare_fast_distillation/summarize_fast/discard_fast/promote_fast/search/get/invalidate/promote/reembed/export/import"
                     ],
                     "tool_map": {
                         "generic": {
@@ -840,6 +889,8 @@ def register_tools(server: Server, memory_service: MemoryService):
                             "memory.log_fast": "Scrittura esplicita nella fast memory episodica.",
                             "memory.list_fast": "Elenco fast-memory entries del progetto corrente.",
                             "memory.get_fast": "Recupera una fast-memory entry per id.",
+                            "memory.rank_fast_candidates": "Fase 1 matematica: cluster e ranking candidati.",
+                            "memory.prepare_fast_distillation": "Fase 2 protetta: prepara pack e prompt per distillazione agentica.",
                             "memory.summarize_fast": "Segna una fast-memory entry come sintetizzata.",
                             "memory.discard_fast": "Scarta una fast-memory entry nel processo di distillazione.",
                             "memory.promote_fast": "Promuove una fast-memory entry nella memoria forte.",
@@ -991,6 +1042,39 @@ def register_tools(server: Server, memory_service: MemoryService):
         if name == "memory.get_fast":
             entry = memory_service.get_fast(arguments["entry_id"], actor)
             return _json_text({"api_version": "v2", "entry": entry.model_dump(mode="json") if entry else None})
+
+        if name == "memory.rank_fast_candidates":
+            payload = memory_service.rank_fast_candidates_for_actor(
+                actor=actor,
+                limit=int(arguments.get("limit", 10)),
+                include_resolved=bool(arguments.get("include_resolved", False)),
+                distillation_status=arguments.get("distillation_status"),
+            )
+            return _json_text({"api_version": "v2", "candidates": payload})
+
+        if name == "memory.prepare_fast_distillation":
+            try:
+                payload = memory_service.prepare_fast_distillation(
+                    actor=actor,
+                    reason=arguments["reason"],
+                    cluster_id=arguments.get("cluster_id"),
+                    entry_id=arguments.get("entry_id"),
+                    top_k=int(arguments.get("top_k", 1)),
+                    include_resolved=bool(arguments.get("include_resolved", False)),
+                    distillation_status=arguments.get("distillation_status"),
+                )
+            except PermissionError as exc:
+                import json
+
+                raise ValueError(
+                    json.dumps(
+                        {
+                            "error_type": "permission_error",
+                            "message": str(exc),
+                        }
+                    )
+                ) from exc
+            return _json_text({"api_version": "v2", **payload})
 
         if name == "memory.summarize_fast":
             payload = memory_service.summarize_fast(
