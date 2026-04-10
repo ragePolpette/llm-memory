@@ -43,6 +43,15 @@ class EntryStatus(str, Enum):
     INVALIDATED = "invalidated"
 
 
+class FastMemoryDistillationStatus(str, Enum):
+    """Stato di distillazione di una fast-memory entry."""
+
+    PENDING = "pending"
+    SUMMARIZED = "summarized"
+    PROMOTED = "promoted"
+    DISCARDED = "discarded"
+
+
 class ScopeRef(BaseModel):
     """Scope gerarchico: workspace/project/user/agent."""
 
@@ -124,6 +133,52 @@ class MemoryEntry(BaseModel):
     @classmethod
     def _bound_confidence(cls, value: float) -> float:
         return max(0.0, min(1.0, value))
+
+
+class FastMemoryEntry(BaseModel):
+    """Entry episodica separata dalla memoria forte."""
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    workspace_id: str = "default"
+    project_id: str = "default"
+    agent_id: str
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    event_type: str = "note"
+    content: str
+    context: str = ""
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+    source: str = "mcp"
+    resolved: bool = False
+    distillation_status: FastMemoryDistillationStatus = FastMemoryDistillationStatus.PENDING
+    distilled_at: Optional[datetime] = None
+    cluster_id: Optional[str] = None
+    recurrence_count: int = 1
+    first_seen_at: datetime = Field(default_factory=utc_now)
+    last_seen_at: datetime = Field(default_factory=utc_now)
+    selection_score: Optional[float] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _ensure_fast_tags(cls, value):
+        if value is None:
+            return []
+        return value
+
+    @field_validator("recurrence_count")
+    @classmethod
+    def _bound_recurrence_count(cls, value: int) -> int:
+        return max(1, int(value))
+
+    @field_validator("selection_score")
+    @classmethod
+    def _bound_selection_score(cls, value: Optional[float]) -> Optional[float]:
+        if value is None:
+            return None
+        return max(0.0, min(1.0, float(value)))
 
 
 class AuditEvent(BaseModel):
