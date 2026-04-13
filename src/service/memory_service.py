@@ -1030,6 +1030,321 @@ class MemoryService:
             "candidates": prepared_candidates,
         }
 
+    @staticmethod
+    def _normalize_fast_distillation_action(value: Any) -> str:
+        normalized = str(value).strip().lower()
+        allowed = {"promote", "summarize_only", "discard", "needs_review"}
+        if normalized not in allowed:
+            raise ValueError(f"action must be one of: {', '.join(sorted(allowed))}")
+        return normalized
+
+    def _normalize_fast_distillation_decision(
+        self,
+        decision: Any,
+        *,
+        index: int,
+    ) -> dict[str, Any]:
+        if not isinstance(decision, dict):
+            raise ValueError(f"decisions[{index}] must be an object")
+
+        cluster_id = self._require_non_empty_reason(
+            decision.get("cluster_id"),
+            field_name=f"decisions[{index}].cluster_id",
+        )
+        action = self._normalize_fast_distillation_action(decision.get("action"))
+        title = self._normalize_optional_text(decision.get("title"))
+        summary = self._normalize_optional_text(decision.get("summary"))
+        explanation = self._normalize_optional_text(decision.get("explanation"))
+
+        try:
+            source_entry_ids = self._normalize_string_list(decision.get("source_entry_ids"))
+        except ValueError as exc:
+            raise ValueError(f"decisions[{index}].source_entry_ids must be an array of strings") from exc
+        if not source_entry_ids:
+            raise ValueError(f"decisions[{index}].source_entry_ids must contain at least one entry id")
+
+        try:
+            open_questions = self._normalize_string_list(decision.get("open_questions"))
+        except ValueError as exc:
+            raise ValueError(f"decisions[{index}].open_questions must be an array of strings") from exc
+
+        confidence = decision.get("confidence")
+        if confidence is not None:
+            try:
+                confidence = self._normalize_optional_probability(confidence)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"decisions[{index}].confidence must be a number between 0 and 1") from exc
+
+        strong_memory = decision.get("strong_memory")
+        normalized_strong_memory: Optional[dict[str, Any]] = None
+        if action == "promote":
+            if not isinstance(strong_memory, dict):
+                raise ValueError(f"decisions[{index}].strong_memory must be an object for promote")
+            content = self._normalize_optional_text(strong_memory.get("content"))
+            if content is None:
+                raise ValueError(f"decisions[{index}].strong_memory.content must be a non-empty string")
+            context = (
+                self._normalize_optional_text(strong_memory.get("context"))
+                or summary
+                or title
+                or "Distilled from fast memory"
+            )
+            tags_raw = strong_memory.get("tags")
+            try:
+                tags = self._normalize_string_list(tags_raw)
+            except ValueError as exc:
+                raise ValueError(f"decisions[{index}].strong_memory.tags must be an array of strings") from exc
+            metadata = strong_memory.get("metadata")
+            if metadata is None:
+                metadata = {}
+            if not isinstance(metadata, dict):
+                raise ValueError(f"decisions[{index}].strong_memory.metadata must be an object")
+
+            raw_type = self._normalize_optional_text(strong_memory.get("type")) or EntryType.FACT.value
+            if raw_type == EntryType.INVALIDATED.value:
+                raise ValueError(f"decisions[{index}].strong_memory.type cannot be invalidated")
+            raw_tier = self._normalize_optional_text(strong_memory.get("tier")) or self.config.promotion_default_target_tier.value
+            raw_visibility = self._normalize_optional_text(strong_memory.get("visibility")) or MemoryScope.SHARED.value
+
+            normalized_strong_memory = {
+                "content": content,
+                "context": context,
+                "type": EntryType(raw_type),
+                "tier": Tier(raw_tier),
+                "visibility": MemoryScope(raw_visibility),
+                "tags": tags,
+                "metadata": dict(metadata),
+            }
+        elif strong_memory is not None and not isinstance(strong_memory, dict):
+            raise ValueError(f"decisions[{index}].strong_memory must be an object when provided")
+
+        if action == "summarize_only" and summary is None:
+            raise ValueError(f"decisions[{index}].summary must be provided for summarize_only")
+
+        return {
+            "cluster_id": cluster_id,
+            "action": action,
+            "title": title,
+            "summary": summary,
+            "explanation": explanation,
+            "confidence": confidence,
+            "source_entry_ids": source_entry_ids,
+            "open_questions": open_questions,
+            "strong_memory": normalized_strong_memory,
+        }
+
+    def _normalize_fast_distillation_payload(self, payload: Any) -> list[dict[str, Any]]:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object with a decisions array")
+        decisions = payload.get("decisions")
+        if not isinstance(decisions, list):
+            raise ValueError("payload.decisions must be an array")
+        if not decisions:
+            raise ValueError("payload.decisions must contain at least one decision")
+        return [
+            self._normalize_fast_distillation_decision(decision, index=index)
+            for index, decision in enumerate(decisions)
+        ]
+
+    def _resolve_fast_distillation_entries(
+        self,
+        *,
+        actor: ActorContext,
+        source_entry_ids: list[str],
+    ) -> list[FastMemoryEntry]:
+        entries: list[FastMemoryEntry] = []
+        for entry_id in source_entry_ids:
+            entry = self.store.get_fast_entry(entry_id)
+            if entry is None:
+                raise ValueError(f"Fast-memory entry '{entry_id}' was not found")
+            if not self._can_read_fast(actor, entry):
+                raise PermissionError("Write denied by scope policy")
+            entries.append(entry)
+        return entries
+
+    def _audit_fast_distillation_apply(
+        self,
+        *,
+        actor: ActorContext,
+        reason: str,
+        decision: dict[str, Any],
+        dry_run: bool,
+        result: dict[str, Any],
+    ) -> None:
+        action_map = {
+            "promote": "fast_distillation_apply_promote",
+            "summarize_only": "fast_distillation_apply_summarize",
+            "discard": "fast_distillation_apply_discard",
+            "needs_review": "fast_distillation_apply_review",
+        }
+        self.store.add_audit(
+            AuditEvent(
+                action=action_map[decision["action"]],
+                actor=actor.agent_id,
+                reason=reason,
+                payload={
+                    "dry_run": dry_run,
+                    "cluster_id": decision["cluster_id"],
+                    "source_entry_ids": decision["source_entry_ids"],
+                    "action": decision["action"],
+                    "result": result,
+                },
+            )
+        )
+
+    async def apply_fast_distillation(
+        self,
+        *,
+        actor: ActorContext,
+        payload: dict[str, Any],
+        reason: str,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        normalized_reason = self._require_non_empty_reason(reason)
+        decisions = self._normalize_fast_distillation_payload(payload)
+        results: list[dict[str, Any]] = []
+
+        for decision in decisions:
+            source_entries = self._resolve_fast_distillation_entries(
+                actor=actor,
+                source_entry_ids=decision["source_entry_ids"],
+            )
+            anchor_entry = source_entries[0]
+            remaining_entries = source_entries[1:]
+            action = decision["action"]
+
+            if action == "promote":
+                strong_memory = dict(decision["strong_memory"] or {})
+                plan = {
+                    "cluster_id": decision["cluster_id"],
+                    "action": action,
+                    "dry_run": dry_run,
+                    "anchor_entry_id": anchor_entry.id,
+                    "remaining_entry_ids": [entry.id for entry in remaining_entries],
+                    "target_tier": strong_memory["tier"].value,
+                    "memory_type": strong_memory["type"].value,
+                    "visibility": strong_memory["visibility"].value,
+                    "content_preview": self._preview_text(strong_memory["content"]),
+                }
+                if not dry_run:
+                    promote_result = await self.promote_fast(
+                        entry_id=anchor_entry.id,
+                        actor=actor,
+                        reason=normalized_reason,
+                        target_tier=strong_memory["tier"],
+                        memory_type=strong_memory["type"],
+                        visibility=strong_memory["visibility"],
+                        summary=strong_memory["content"],
+                        confidence=float(decision["confidence"] or 0.8),
+                    )
+                    for remaining_entry in remaining_entries:
+                        self.summarize_fast(
+                            entry_id=remaining_entry.id,
+                            actor=actor,
+                            summary=decision["summary"] or strong_memory["content"],
+                            reason=f"{normalized_reason}: covered by promoted cluster {decision['cluster_id']}",
+                            cluster_id=decision["cluster_id"],
+                            resolved=True,
+                        )
+                    plan.update(
+                        {
+                            "applied": True,
+                            "promoted_entry_id": promote_result["promoted_entry_id"],
+                            "summarized_entry_ids": [entry.id for entry in remaining_entries],
+                        }
+                    )
+                results.append(plan)
+                self._audit_fast_distillation_apply(
+                    actor=actor,
+                    reason=normalized_reason,
+                    decision=decision,
+                    dry_run=dry_run,
+                    result=plan,
+                )
+                continue
+
+            if action == "summarize_only":
+                plan = {
+                    "cluster_id": decision["cluster_id"],
+                    "action": action,
+                    "dry_run": dry_run,
+                    "summary": decision["summary"],
+                    "entry_ids": [entry.id for entry in source_entries],
+                }
+                if not dry_run:
+                    for entry in source_entries:
+                        self.summarize_fast(
+                            entry_id=entry.id,
+                            actor=actor,
+                            summary=decision["summary"],
+                            reason=normalized_reason,
+                            cluster_id=decision["cluster_id"],
+                            resolved=False,
+                        )
+                    plan["applied"] = True
+                results.append(plan)
+                self._audit_fast_distillation_apply(
+                    actor=actor,
+                    reason=normalized_reason,
+                    decision=decision,
+                    dry_run=dry_run,
+                    result=plan,
+                )
+                continue
+
+            if action == "discard":
+                plan = {
+                    "cluster_id": decision["cluster_id"],
+                    "action": action,
+                    "dry_run": dry_run,
+                    "entry_ids": [entry.id for entry in source_entries],
+                }
+                if not dry_run:
+                    for entry in source_entries:
+                        self.discard_fast(
+                            entry_id=entry.id,
+                            actor=actor,
+                            reason=normalized_reason,
+                            resolved=False,
+                        )
+                    plan["applied"] = True
+                results.append(plan)
+                self._audit_fast_distillation_apply(
+                    actor=actor,
+                    reason=normalized_reason,
+                    decision=decision,
+                    dry_run=dry_run,
+                    result=plan,
+                )
+                continue
+
+            plan = {
+                "cluster_id": decision["cluster_id"],
+                "action": action,
+                "dry_run": dry_run,
+                "entry_ids": [entry.id for entry in source_entries],
+                "title": decision["title"],
+                "summary": decision["summary"],
+                "open_questions": decision["open_questions"],
+                "status": "needs_review",
+            }
+            results.append(plan)
+            self._audit_fast_distillation_apply(
+                actor=actor,
+                reason=normalized_reason,
+                decision=decision,
+                dry_run=dry_run,
+                result=plan,
+            )
+
+        return {
+            "success": True,
+            "dry_run": bool(dry_run),
+            "count": len(results),
+            "reason": normalized_reason,
+            "results": results,
+        }
+
     def _validate_write_payload(self, payload: dict[str, Any]) -> None:
         content = payload.get("content")
         if not isinstance(content, str) or not content.strip():
