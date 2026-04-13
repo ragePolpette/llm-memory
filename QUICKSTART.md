@@ -4,7 +4,7 @@
 
 ```bash
 cd <project-root>\llm-memory
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 Il default e' `hash-local`, quindi non serve scaricare un modello esterno per iniziare.
@@ -76,6 +76,12 @@ Tool di discovery e amministrazione:
 Tool operativi:
 
 - `memory.add`
+- `memory.log_fast`
+- `memory.list_fast`
+- `memory.get_fast`
+- `memory.rank_fast_candidates`
+- `memory.prepare_fast_distillation`
+- `memory.apply_fast_distillation`
 - `memory.search`
 - `memory.get`
 - `memory.invalidate`
@@ -109,6 +115,53 @@ Tool operativi:
   "include_project": true,
   "include_workspace": true,
   "include_global": true
+}
+```
+
+### `memory.log_fast`
+
+```json
+{
+  "agent_id": "local-agent",
+  "content": "Bug: l'utente Y vede solo il menu X. Fix applicato aggiornando la tabella permessi.",
+  "kind": "fix",
+  "product_area": "menu",
+  "component": "permissions",
+  "action_taken": "Aggiornata la tabella permessi per riallineare le voci abilitate.",
+  "outcome": "Menu corretto dopo refresh sessione.",
+  "generalizable": true
+}
+```
+
+### `memory.rank_fast_candidates`
+
+```json
+{
+  "agent_id": "local-agent",
+  "limit": 5
+}
+```
+
+### `memory.prepare_fast_distillation`
+
+```json
+{
+  "agent_id": "local-agent",
+  "reason": "Distill top candidate into strong project memory",
+  "top_k": 1
+}
+```
+
+### `memory.apply_fast_distillation`
+
+```json
+{
+  "agent_id": "local-agent",
+  "reason": "Apply reviewed distillation output",
+  "dry_run": true,
+  "payload": {
+    "decisions": []
+  }
 }
 ```
 
@@ -159,3 +212,31 @@ Per il runtime containerizzato usa la guida dedicata in `DOCKER_GUIDE.md`.
 ## 9. Development Workflow
 
 Per il workflow di sviluppo e contribution usa `CONTRIBUTING.md`.
+
+## 10. Distillazione Fast Memory
+
+La distillazione agentica e' protetta e disabilitata di default.
+
+Per abilitarla localmente:
+
+```bash
+set FAST_MEMORY_AGENT_DISTILLATION_ENABLED=true
+set FAST_MEMORY_AGENT_DISTILLATION_APPLY_ENABLED=true
+```
+
+Workflow minimo:
+
+1. scrivi note episodiche con `memory.log_fast`
+2. ordina i candidati con `memory.rank_fast_candidates`
+3. prepara il candidate pack con `memory.prepare_fast_distillation`
+4. lancia la CLI locale:
+
+```bash
+llm-memory-fast-distill run --agent-id local-cli --reason "distill top candidate" --top-k 1 --harness codex
+```
+
+5. applica l'output JSON risultante:
+
+```bash
+llm-memory-fast-distill apply --input result.json
+```
