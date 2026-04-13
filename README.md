@@ -7,9 +7,9 @@ It is designed for reusable facts, decisions, assumptions, invalidations, and pr
 ## What It Does
 
 - stores persistent operational memory locally with SQLite-backed metadata and vectors
-- supports tiered memory for short-lived, project, and curated long-term knowledge
+- supports tiered memory for strong memory and fast operational memory
 - provides explicit scope composition across `project`, `workspace`, and `global`
-- exposes MCP tools for add, search, promote, invalidate, import, export, and re-embed workflows
+- exposes MCP tools for strong-memory writes, fast-memory distillation, search, promote, invalidate, import, export, and re-embed workflows
 - keeps audit trails and persistence policies close to the write path
 
 ## Why It Exists
@@ -27,7 +27,7 @@ The project is intended for serious workstation or small-team environments where
 
 ## Core Concepts
 
-- Tiering: session-like, project-level, and curated long-term memory buckets
+- Tiering: strong memory for durable knowledge and fast memory for episodic operational notes
 - Scope hierarchy: retrieval can compose `project`, `workspace`, and `global`
 - Governance: promotion, invalidation, deduplication, and audit trail
 - Local-first operation: no cloud service required for the default setup
@@ -78,6 +78,7 @@ Operational memory tools:
 - `memory.get_fast`
 - `memory.rank_fast_candidates`
 - `memory.prepare_fast_distillation`
+- `memory.apply_fast_distillation`
 - `memory.summarize_fast`
 - `memory.discard_fast`
 - `memory.promote_fast`
@@ -123,6 +124,12 @@ Launch a local harness with the fixed prompt:
 llm-memory-fast-distill run --agent-id local-cli --reason "distill top candidate" --top-k 1 --harness codex
 ```
 
+Apply a distillation result from a local JSON file:
+
+```bash
+llm-memory-fast-distill apply --input result.json
+```
+
 Useful local endpoints:
 
 - `GET /health`
@@ -131,7 +138,27 @@ Useful local endpoints:
 - `GET /admin/projects`
 - `GET /admin/fast-memory`
 - `GET /admin/fast-memory/candidates`
+- `GET /admin/fast-memory/distillation/runs`
+- `GET /admin/fast-memory/distillation/runs/{run_id}`
 - `GET /admin/fast-memory/{entry_id}`
+- `POST /admin/fast-memory/distillation/prepare`
+- `POST /admin/fast-memory/distillation/apply`
+
+## Fast Memory Flow
+
+The intended fast-memory workflow is:
+
+1. write episodic notes with `memory.log_fast`
+2. inspect ranked candidates with `memory.rank_fast_candidates`
+3. prepare a protected distillation pack with `memory.prepare_fast_distillation`
+4. run a local harness or CLI against the prepared pack
+5. apply the resulting JSON with `memory.apply_fast_distillation`
+
+The distillation flow is disabled by default.
+Enable it explicitly with:
+
+- `FAST_MEMORY_AGENT_DISTILLATION_ENABLED=true`
+- `FAST_MEMORY_AGENT_DISTILLATION_APPLY_ENABLED=true`
 
 ## Runtime Characteristics
 

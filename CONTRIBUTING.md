@@ -20,15 +20,14 @@ Useful entrypoints:
 
 ## Development Workflow
 
-1. pick the next unchecked item from `docs/ROADMAP_CHECKLIST.md`
-2. create a branch: `feature/<short-name>`
+1. create a branch: `feature/<short-name>`
+2. keep the change scoped to one coherent slice
 3. implement the change
 4. add or update tests
 5. run local verification
 6. push branch
 7. open PR
 8. merge
-9. update `docs/ROADMAP_CHECKLIST.md`
 
 ## Quality Bar
 
