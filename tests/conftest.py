@@ -34,6 +34,7 @@ def test_config() -> Config:
         dedup_semantic_threshold=0.92,
         self_eval_enforced=False,
         fast_memory_agent_distillation_enabled=False,
+        fast_memory_agent_distillation_apply_enabled=False,
     )
 
 
