@@ -249,6 +249,74 @@ class MemoryService:
                 return unique
         return unique
 
+    def _fast_candidate_text_parts(self, entry: FastMemoryEntry) -> list[str]:
+        structured = self._fast_structured_context(entry)
+        return [
+            entry.content,
+            entry.context,
+            structured.get("root_cause_hypothesis", ""),
+            structured.get("action_taken", ""),
+            structured.get("outcome", ""),
+            " ".join(structured.get("symptoms", [])) if isinstance(structured.get("symptoms"), list) else "",
+        ]
+
+    def _fast_candidate_token_set(self, entry: FastMemoryEntry, *, limit: int = 18) -> set[str]:
+        return set(self._fast_cluster_text_tokens([part for part in self._fast_candidate_text_parts(entry) if part], limit=limit))
+
+    def _fast_candidate_entity_types(self, entry: FastMemoryEntry) -> set[str]:
+        structured = self._fast_structured_context(entry)
+        values = structured.get("entity_refs")
+        if not isinstance(values, list):
+            return set()
+        entity_types: set[str] = set()
+        for item in values:
+            text = str(item).strip().lower()
+            if not text:
+                continue
+            prefix = text.split(":", 1)[0].strip()
+            entity_types.add(prefix or text)
+        return entity_types
+
+    @staticmethod
+    def _set_similarity(left: set[str], right: set[str]) -> float:
+        if not left or not right:
+            return 0.0
+        union = left | right
+        if not union:
+            return 0.0
+        return len(left & right) / len(union)
+
+    def _fast_candidate_scope_alignment_score(self, left: FastMemoryEntry, right: FastMemoryEntry) -> float:
+        left_structured = self._fast_structured_context(left)
+        right_structured = self._fast_structured_context(right)
+        score = 0.0
+        comparisons = (
+            ("kind", 0.12),
+            ("product_area", 0.22),
+            ("component", 0.32),
+            ("feature", 0.14),
+        )
+        for field_name, weight in comparisons:
+            left_value = self._normalize_optional_text(left_structured.get(field_name))
+            right_value = self._normalize_optional_text(right_structured.get(field_name))
+            if left_value and right_value and left_value.lower() == right_value.lower():
+                score += weight
+
+        if str(left.event_type).strip().lower() == str(right.event_type).strip().lower():
+            score += 0.12
+        return max(0.0, min(1.0, score))
+
+    def _fast_candidate_merge_score(self, left: dict[str, Any], right: dict[str, Any]) -> float:
+        scope_alignment = self._fast_candidate_scope_alignment_score(left["representative"], right["representative"])
+        token_similarity = self._set_similarity(left["token_set"], right["token_set"])
+        entity_type_similarity = self._set_similarity(left["entity_type_set"], right["entity_type_set"])
+
+        if token_similarity < 0.12 and entity_type_similarity == 0.0 and scope_alignment < 0.75:
+            return 0.0
+
+        score = (scope_alignment * 0.55) + (token_similarity * 0.30) + (entity_type_similarity * 0.15)
+        return round(max(0.0, min(1.0, score)), 6)
+
     def _fast_candidate_cluster_key(self, entry: FastMemoryEntry) -> str:
         structured = self._fast_structured_context(entry)
         cluster_parts = [
@@ -257,18 +325,76 @@ class MemoryService:
             str(structured.get("component") or "").strip().lower(),
             str(structured.get("feature") or "").strip().lower(),
         ]
-        text_parts = [
-            entry.content,
-            entry.context,
-            structured.get("root_cause_hypothesis", ""),
-            structured.get("action_taken", ""),
-            structured.get("outcome", ""),
-            " ".join(structured.get("symptoms", [])) if isinstance(structured.get("symptoms"), list) else "",
-        ]
-        tokens = self._fast_cluster_text_tokens([part for part in text_parts if part])
+        tokens = self._fast_cluster_text_tokens([part for part in self._fast_candidate_text_parts(entry) if part])
         fingerprint_source = "|".join(cluster_parts + tokens)
         fingerprint = compute_content_hash(fingerprint_source or entry.content.lower().strip())[:16]
         return "::".join(cluster_parts + [fingerprint])
+
+    def _make_fast_candidate_cluster(
+        self,
+        members: list[FastMemoryEntry],
+        *,
+        cluster_keys: Optional[list[str]] = None,
+        merge_scores: Optional[list[float]] = None,
+    ) -> dict[str, Any]:
+        representative = self._candidate_representative(members)
+        return {
+            "members": list(members),
+            "representative": representative,
+            "cluster_keys": list(cluster_keys or []),
+            "base_cluster_count": len(cluster_keys or []),
+            "merge_scores": list(merge_scores or []),
+            "token_set": self._fast_candidate_token_set(representative),
+            "entity_type_set": self._fast_candidate_entity_types(representative),
+        }
+
+    def _build_fast_candidate_clusters(self, entries: list[FastMemoryEntry]) -> list[dict[str, Any]]:
+        base_clusters: dict[str, list[FastMemoryEntry]] = {}
+        for entry in entries:
+            cluster_key = self._fast_candidate_cluster_key(entry)
+            base_clusters.setdefault(cluster_key, []).append(entry)
+
+        working_clusters = [
+            self._make_fast_candidate_cluster(
+                members,
+                cluster_keys=[cluster_key],
+            )
+            for cluster_key, members in base_clusters.items()
+        ]
+        working_clusters.sort(
+            key=lambda item: (
+                len(item["members"]),
+                float(item["representative"].selection_score or 0.0),
+                int(item["representative"].recurrence_count),
+            ),
+            reverse=True,
+        )
+
+        merged: list[dict[str, Any]] = []
+        for candidate in working_clusters:
+            best_index = -1
+            best_score = 0.0
+            for index, existing in enumerate(merged):
+                merge_score = self._fast_candidate_merge_score(existing, candidate)
+                if merge_score > best_score:
+                    best_score = merge_score
+                    best_index = index
+
+            if best_index >= 0 and best_score >= 0.52:
+                existing = merged[best_index]
+                merged_members = list(existing["members"]) + list(candidate["members"])
+                merged_keys = list(existing["cluster_keys"]) + list(candidate["cluster_keys"])
+                merged_scores = list(existing["merge_scores"]) + [best_score]
+                merged[best_index] = self._make_fast_candidate_cluster(
+                    merged_members,
+                    cluster_keys=merged_keys,
+                    merge_scores=merged_scores,
+                )
+                continue
+
+            merged.append(candidate)
+
+        return merged
 
     @staticmethod
     def _candidate_representative(entries: list[FastMemoryEntry]) -> FastMemoryEntry:
@@ -288,25 +414,33 @@ class MemoryService:
         member_count: int,
         distinct_session_count: int,
         distinct_day_count: int,
+        distinct_entity_count: int,
         unresolved_count: int,
         recurrence_total: int,
+        base_cluster_count: int,
         score_breakdown: dict[str, Any],
     ) -> list[str]:
         reasons: list[str] = []
         if member_count >= 2:
             reasons.append(f"clustered_{member_count}_entries")
+        if base_cluster_count >= 2:
+            reasons.append("semantic_cluster_merge")
         if recurrence_total >= 3:
             reasons.append("recurrent_pattern")
         if distinct_session_count >= 2:
             reasons.append("cross_session_signal")
         if distinct_day_count >= 2:
             reasons.append("cross_day_signal")
+        if distinct_entity_count >= 3:
+            reasons.append("wide_entity_spread")
         if unresolved_count >= 1:
             reasons.append("still_open")
         if structured.get("generalizable") == "yes":
             reasons.append("explicitly_generalizable")
         if float(score_breakdown.get("recurrence_boost", 0.0)) >= 0.15:
             reasons.append("high_recurrence_boost")
+        if float(score_breakdown.get("semantic_cohesion", 1.0)) <= 0.45:
+            reasons.append("low_semantic_cohesion")
         if float(score_breakdown.get("noise_penalty", 0.0)) >= 0.4:
             reasons.append("noise_risk")
         return reasons
@@ -717,14 +851,10 @@ class MemoryService:
             limit=pool_limit,
         )
 
-        clusters: dict[str, list[FastMemoryEntry]] = {}
-        for entry in entries:
-            cluster_key = self._fast_candidate_cluster_key(entry)
-            clusters.setdefault(cluster_key, []).append(entry)
-
         items: list[dict[str, Any]] = []
-        for cluster_key, members in clusters.items():
-            representative = self._candidate_representative(members)
+        for cluster in self._build_fast_candidate_clusters(entries):
+            members = cluster["members"]
+            representative = cluster["representative"]
             structured = self._fast_structured_context(representative)
             total_recurrence = sum(max(1, int(member.recurrence_count)) for member in members)
             distinct_sessions = {
@@ -773,15 +903,34 @@ class MemoryService:
             duplicate_ratio = 0.0
             if members:
                 duplicate_ratio = max(0.0, 1.0 - (len(unique_content_hashes) / len(members)))
+            cohesion_scores: list[float] = []
+            scope_scores: list[float] = []
+            representative_tokens = self._fast_candidate_token_set(representative)
+            for member in members:
+                token_similarity = self._set_similarity(representative_tokens, self._fast_candidate_token_set(member))
+                scope_similarity = self._fast_candidate_scope_alignment_score(representative, member)
+                scope_scores.append(scope_similarity)
+                cohesion_scores.append((scope_similarity * 0.6) + (token_similarity * 0.4))
+
+            semantic_cohesion = sum(cohesion_scores) / len(cohesion_scores) if cohesion_scores else 1.0
+            scope_alignment_score = sum(scope_scores) / len(scope_scores) if scope_scores else 1.0
+            entity_spread_score = min(1.0, len(normalized_entities) / 4.0) if normalized_entities else 0.0
+            time_spread_score = min(1.0, len(distinct_days) / 3.0) if distinct_days else 0.0
             aggregate_metadata = dict(representative.metadata)
             aggregate_metadata.update(
                 {
                     "distinct_session_count": len(distinct_sessions),
                     "distinct_day_count": len(distinct_days),
+                    "distinct_agent_count": len(distinct_agents),
+                    "distinct_entity_count": len(normalized_entities),
                     "outcome_reuse_count": outcome_reuse_count,
                     "duplicate_ratio": round(duplicate_ratio, 6),
                     "same_session_ratio": round(max_session_density / max(1, len(members)), 6),
                     "loop_ratio": round(retry_members / max(1, len(members)), 6),
+                    "semantic_cohesion": round(semantic_cohesion, 6),
+                    "scope_alignment_score": round(scope_alignment_score, 6),
+                    "entity_spread_score": round(entity_spread_score, 6),
+                    "time_spread_score": round(time_spread_score, 6),
                 }
             )
             score_breakdown = build_fast_selection_metadata(
@@ -790,18 +939,25 @@ class MemoryService:
                 event_type=representative.event_type,
             )
             unresolved_count = sum(1 for member in members if not member.resolved)
-            cluster_id = compute_content_hash(cluster_key)[:16]
+            cluster_id = compute_content_hash("|".join(cluster["cluster_keys"]))[:16]
             candidate = {
                 "cluster_id": cluster_id,
-                "cluster_key": cluster_key,
+                "cluster_key": representative.id if len(cluster["cluster_keys"]) == 1 else "merged-fast-cluster-v2",
                 "candidate_score": score_breakdown["selection_score"],
                 "score_breakdown": score_breakdown,
                 "member_count": len(members),
+                "base_cluster_count": cluster["base_cluster_count"],
+                "merge_version": "fast-cluster-v2",
+                "merge_score_max": max(cluster["merge_scores"], default=0.0),
                 "recurrence_total": total_recurrence,
                 "distinct_session_count": len(distinct_sessions),
                 "distinct_day_count": len(distinct_days),
                 "distinct_agent_count": len(distinct_agents),
                 "distinct_entity_count": len(normalized_entities),
+                "semantic_cohesion": round(semantic_cohesion, 6),
+                "scope_alignment_score": round(scope_alignment_score, 6),
+                "entity_spread_score": round(entity_spread_score, 6),
+                "time_spread_score": round(time_spread_score, 6),
                 "unresolved_count": unresolved_count,
                 "representative_entry_id": representative.id,
                 "representative_event_type": representative.event_type,
@@ -819,8 +975,10 @@ class MemoryService:
                     member_count=len(members),
                     distinct_session_count=len(distinct_sessions),
                     distinct_day_count=len(distinct_days),
+                    distinct_entity_count=len(normalized_entities),
                     unresolved_count=unresolved_count,
                     recurrence_total=total_recurrence,
+                    base_cluster_count=cluster["base_cluster_count"],
                     score_breakdown=score_breakdown,
                 ),
             }
