@@ -387,6 +387,50 @@ async def test_admin_fast_memory_candidates_support_include_resolved(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_admin_fast_memory_distillation_runs_return_history(monkeypatch, service):
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
+    run = service._new_fast_distillation_run(  # noqa: SLF001 - direct coverage of admin history surface
+        actor=actor,
+        reason="history from admin",
+        cluster_ids=["cluster-menu"],
+        source_entry_ids=["fast-1"],
+        prepared_payload={"prepared_count": 1},
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(query_params={"workspace_id": "ws-test", "project_id": "project-alpha", "limit": "10"})
+
+    response = await http_server.admin_fast_memory_distillation_runs(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["runs"]["count"] >= 1
+    assert payload["runs"]["items"][0]["id"] == run.id
+
+
+@pytest.mark.asyncio
+async def test_admin_fast_memory_distillation_run_returns_detail(monkeypatch, service):
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
+    run = service._new_fast_distillation_run(  # noqa: SLF001 - direct coverage of admin history surface
+        actor=actor,
+        reason="detail from admin",
+        cluster_ids=["cluster-menu"],
+        source_entry_ids=["fast-1"],
+        prepared_payload={"prepared_count": 1},
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(path_params={"run_id": run.id})
+
+    response = await http_server.admin_fast_memory_distillation_run(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["run"]["id"] == run.id
+    assert payload["run"]["status"] == "prepared"
+
+
+@pytest.mark.asyncio
 async def test_admin_fast_memory_candidates_merges_semantic_variants(monkeypatch, service):
     actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
     service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
@@ -536,6 +580,7 @@ async def test_admin_prepare_fast_distillation_requires_feature_flag(monkeypatch
 @pytest.mark.asyncio
 async def test_admin_apply_fast_distillation_supports_dry_run(monkeypatch, service):
     service.config.fast_memory_agent_distillation_apply_enabled = True
+    service.config.fast_memory_agent_distillation_enabled = True
     actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
     service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
     first = service.log_fast(
@@ -557,6 +602,12 @@ async def test_admin_apply_fast_distillation_supports_dry_run(monkeypatch, servi
         actor,
     )
 
+    prepared = service.prepare_fast_distillation(
+        actor=actor,
+        reason="prepare from admin before preview",
+        top_k=1,
+    )
+
     monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service, config=service.config))
 
     class _Request:
@@ -567,6 +618,7 @@ async def test_admin_apply_fast_distillation_supports_dry_run(monkeypatch, servi
                 "workspace_id": actor.workspace_id,
                 "project_id": actor.project_id,
                 "reason": "preview apply from dashboard",
+                "run_id": prepared["run_id"],
                 "payload": {
                     "decisions": [
                         {
@@ -595,6 +647,7 @@ async def test_admin_apply_fast_distillation_supports_dry_run(monkeypatch, servi
     assert response.status_code == 200
     assert payload["distillation_apply"]["success"] is True
     assert payload["distillation_apply"]["dry_run"] is True
+    assert payload["distillation_apply"]["run_id"] == prepared["run_id"]
 
 
 @pytest.mark.asyncio

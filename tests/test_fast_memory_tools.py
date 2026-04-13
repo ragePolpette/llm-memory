@@ -429,7 +429,7 @@ async def test_prepare_fast_distillation_tool_returns_candidate_pack_when_enable
     payload = _tool_payload(result)
 
     assert payload["prepared_count"] == 1
-    assert payload["protection"]["mode"] == "prepare_only"
+    assert payload["protection"]["mode"] == "review_then_apply"
     assert "Return JSON only" in payload["prompt"]
     assert payload["candidates"][0]["source_entries"][0]["structured_context"]["component"] == "menu-engine"
 

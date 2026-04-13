@@ -5,7 +5,16 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from ..models import AuditEvent, EmbeddingVersion, FastMemoryDistillationStatus, FastMemoryEntry, MemoryEntry, ScopeRef
+from ..models import (
+    AuditEvent,
+    EmbeddingVersion,
+    FastMemoryDistillationRun,
+    FastMemoryDistillationRunStatus,
+    FastMemoryDistillationStatus,
+    FastMemoryEntry,
+    MemoryEntry,
+    ScopeRef,
+)
 
 
 class MetadataStore(ABC):
@@ -88,4 +97,28 @@ class MetadataStore(ABC):
         resolved: Optional[bool] = None,
         distillation_status: FastMemoryDistillationStatus | None = None,
     ) -> int:
+        pass
+
+    @abstractmethod
+    def add_fast_distillation_run(self, run: FastMemoryDistillationRun) -> None:
+        pass
+
+    @abstractmethod
+    def update_fast_distillation_run(self, run: FastMemoryDistillationRun) -> None:
+        pass
+
+    @abstractmethod
+    def get_fast_distillation_run(self, run_id: str) -> Optional[FastMemoryDistillationRun]:
+        pass
+
+    @abstractmethod
+    def list_fast_distillation_runs(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        status: FastMemoryDistillationRunStatus | None = None,
+        limit: int = 50,
+    ) -> list[FastMemoryDistillationRun]:
         pass
