@@ -19,6 +19,8 @@ from ..models import (
     EntryStatus,
     EntryType,
     ExportResult,
+    FastMemoryDistillationRun,
+    FastMemoryDistillationRunStatus,
     FastMemoryDistillationStatus,
     FastMemoryEntry,
     ImportResult,
@@ -827,6 +829,103 @@ class MemoryService:
         payload["context_preview"] = self._preview_text(entry.context, limit=160)
         return payload
 
+    def _serialize_fast_distillation_run(self, run: FastMemoryDistillationRun) -> dict[str, Any]:
+        payload = run.model_dump(mode="json")
+        payload["prepared_count"] = len(run.prepared_payload.get("candidates", [])) if isinstance(run.prepared_payload, dict) else 0
+        payload["apply_result_count"] = len(run.apply_result_payload.get("results", [])) if isinstance(run.apply_result_payload, dict) else 0
+        return payload
+
+    def admin_list_fast_distillation_runs(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        clamped_limit = max(1, min(int(limit), 200))
+        requested_status = (
+            FastMemoryDistillationRunStatus(str(status).strip().lower())
+            if status is not None and str(status).strip()
+            else None
+        )
+        runs = self.store.list_fast_distillation_runs(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            agent_id=agent_id,
+            status=requested_status,
+            limit=clamped_limit,
+        )
+        return {
+            "count": len(runs),
+            "limit": clamped_limit,
+            "filters": {
+                "workspace_id": workspace_id,
+                "project_id": project_id,
+                "agent_id": agent_id,
+                "status": requested_status.value if requested_status is not None else None,
+            },
+            "items": [self._serialize_fast_distillation_run(run) for run in runs],
+        }
+
+    def admin_get_fast_distillation_run(self, run_id: str) -> Optional[dict[str, Any]]:
+        run = self.store.get_fast_distillation_run(run_id)
+        if run is None:
+            return None
+        return self._serialize_fast_distillation_run(run)
+
+    def _new_fast_distillation_run(
+        self,
+        *,
+        actor: ActorContext,
+        reason: str,
+        cluster_ids: list[str],
+        source_entry_ids: list[str],
+        prepared_payload: Optional[dict[str, Any]] = None,
+    ) -> FastMemoryDistillationRun:
+        now_iso = utc_now_iso()
+        run = FastMemoryDistillationRun(
+            workspace_id=actor.workspace_id,
+            project_id=actor.project_id,
+            agent_id=actor.agent_id,
+            user_id=actor.user_id,
+            status=FastMemoryDistillationRunStatus.PREPARED,
+            reason=reason,
+            cluster_ids=cluster_ids,
+            source_entry_ids=source_entry_ids,
+            prepared_payload=dict(prepared_payload or {}),
+            created_at=now_iso,
+            updated_at=now_iso,
+            prepared_at=now_iso,
+        )
+        self.store.add_fast_distillation_run(run)
+        return run
+
+    def _resolve_fast_distillation_run(
+        self,
+        *,
+        run_id: Optional[str],
+        actor: ActorContext,
+        reason: str,
+        source_entry_ids: list[str],
+        cluster_ids: list[str],
+    ) -> FastMemoryDistillationRun:
+        if run_id:
+            run = self.store.get_fast_distillation_run(run_id)
+            if run is None:
+                raise ValueError(f"Fast-memory distillation run '{run_id}' was not found")
+            if run.workspace_id != actor.workspace_id or run.project_id != actor.project_id:
+                raise PermissionError("Write denied by scope policy")
+            return run
+
+        return self._new_fast_distillation_run(
+            actor=actor,
+            reason=reason,
+            cluster_ids=cluster_ids,
+            source_entry_ids=source_entry_ids,
+        )
+
     def admin_rank_fast_candidates(
         self,
         *,
@@ -1059,13 +1158,15 @@ class MemoryService:
 
         if not candidates:
             return {
+                "run_id": None,
+                "workflow_status": FastMemoryDistillationRunStatus.PREPARED.value,
                 "prepared_count": 0,
                 "reason": normalized_reason,
                 "filters": ranked["filters"],
                 "protection": {
                     "enabled": True,
-                    "apply_supported": False,
-                    "mode": "prepare_only",
+                    "apply_supported": True,
+                    "mode": "review_then_apply",
                 },
                 "prompt": None,
                 "contract": None,
@@ -1159,12 +1260,39 @@ class MemoryService:
             "Do not apply changes directly; this is a preparation step."
         )
 
+        prepared_payload = {
+            "prepared_count": len(prepared_candidates),
+            "reason": normalized_reason,
+            "filters": ranked["filters"],
+            "protection": {
+                "enabled": True,
+                "apply_supported": True,
+                "mode": "review_then_apply",
+            },
+            "prompt": prompt,
+            "contract": contract,
+            "candidates": prepared_candidates,
+        }
+        run = self._new_fast_distillation_run(
+            actor=actor,
+            reason=normalized_reason,
+            cluster_ids=[str(candidate["cluster_id"]) for candidate in prepared_candidates if candidate.get("cluster_id")],
+            source_entry_ids=[
+                str(entry["id"])
+                for candidate in prepared_candidates
+                for entry in candidate.get("source_entries", [])
+                if entry.get("id")
+            ],
+            prepared_payload=prepared_payload,
+        )
+
         self.store.add_audit(
             AuditEvent(
                 action="fast_distillation_prepare",
                 actor=actor.agent_id,
                 reason=normalized_reason,
                 payload={
+                    "run_id": run.id,
                     "cluster_id": cluster_id,
                     "entry_id": entry_id,
                     "top_k": candidate_limit,
@@ -1175,13 +1303,15 @@ class MemoryService:
             )
         )
         return {
+            "run_id": run.id,
+            "workflow_status": run.status.value,
             "prepared_count": len(prepared_candidates),
             "reason": normalized_reason,
             "filters": ranked["filters"],
             "protection": {
                 "enabled": True,
-                "apply_supported": False,
-                "mode": "prepare_only",
+                "apply_supported": True,
+                "mode": "review_then_apply",
             },
             "prompt": prompt,
             "contract": contract,
@@ -1325,6 +1455,7 @@ class MemoryService:
         *,
         actor: ActorContext,
         reason: str,
+        run_id: str,
         decision: dict[str, Any],
         dry_run: bool,
         result: dict[str, Any],
@@ -1341,6 +1472,7 @@ class MemoryService:
                 actor=actor.agent_id,
                 reason=reason,
                 payload={
+                    "run_id": run_id,
                     "dry_run": dry_run,
                     "cluster_id": decision["cluster_id"],
                     "source_entry_ids": decision["source_entry_ids"],
@@ -1356,6 +1488,7 @@ class MemoryService:
         actor: ActorContext,
         payload: dict[str, Any],
         reason: str,
+        run_id: Optional[str] = None,
         dry_run: bool = True,
     ) -> dict[str, Any]:
         if not self.config.fast_memory_agent_distillation_apply_enabled:
@@ -1364,6 +1497,17 @@ class MemoryService:
             )
         normalized_reason = self._require_non_empty_reason(reason)
         decisions = self._normalize_fast_distillation_payload(payload)
+        run = self._resolve_fast_distillation_run(
+            run_id=run_id,
+            actor=actor,
+            reason=normalized_reason,
+            source_entry_ids=[
+                str(entry_id)
+                for decision in decisions
+                for entry_id in decision["source_entry_ids"]
+            ],
+            cluster_ids=[str(decision["cluster_id"]) for decision in decisions],
+        )
         results: list[dict[str, Any]] = []
 
         for decision in decisions:
@@ -1398,6 +1542,7 @@ class MemoryService:
                         visibility=strong_memory["visibility"],
                         summary=strong_memory["content"],
                         confidence=float(decision["confidence"] or 0.8),
+                        distillation_run_id=run.id,
                     )
                     for remaining_entry in remaining_entries:
                         self.summarize_fast(
@@ -1407,6 +1552,7 @@ class MemoryService:
                             reason=f"{normalized_reason}: covered by promoted cluster {decision['cluster_id']}",
                             cluster_id=decision["cluster_id"],
                             resolved=True,
+                            distillation_run_id=run.id,
                         )
                     plan.update(
                         {
@@ -1419,6 +1565,7 @@ class MemoryService:
                 self._audit_fast_distillation_apply(
                     actor=actor,
                     reason=normalized_reason,
+                    run_id=run.id,
                     decision=decision,
                     dry_run=dry_run,
                     result=plan,
@@ -1442,12 +1589,14 @@ class MemoryService:
                             reason=normalized_reason,
                             cluster_id=decision["cluster_id"],
                             resolved=False,
+                            distillation_run_id=run.id,
                         )
                     plan["applied"] = True
                 results.append(plan)
                 self._audit_fast_distillation_apply(
                     actor=actor,
                     reason=normalized_reason,
+                    run_id=run.id,
                     decision=decision,
                     dry_run=dry_run,
                     result=plan,
@@ -1468,12 +1617,14 @@ class MemoryService:
                             actor=actor,
                             reason=normalized_reason,
                             resolved=False,
+                            distillation_run_id=run.id,
                         )
                     plan["applied"] = True
                 results.append(plan)
                 self._audit_fast_distillation_apply(
                     actor=actor,
                     reason=normalized_reason,
+                    run_id=run.id,
                     decision=decision,
                     dry_run=dry_run,
                     result=plan,
@@ -1494,12 +1645,33 @@ class MemoryService:
             self._audit_fast_distillation_apply(
                 actor=actor,
                 reason=normalized_reason,
+                run_id=run.id,
                 decision=decision,
                 dry_run=dry_run,
                 result=plan,
             )
 
+        now_iso = utc_now_iso()
+        run.status = FastMemoryDistillationRunStatus.REVIEWED if dry_run else FastMemoryDistillationRunStatus.APPLIED
+        run.agent_output_payload = dict(payload)
+        run.apply_result_payload = {
+            "success": True,
+            "dry_run": bool(dry_run),
+            "count": len(results),
+            "reason": normalized_reason,
+            "results": results,
+        }
+        run.updated_at = now_iso
+        if dry_run:
+            run.reviewed_at = now_iso
+        else:
+            run.reviewed_at = run.reviewed_at or now_iso
+            run.applied_at = now_iso
+        self.store.update_fast_distillation_run(run)
+
         return {
+            "run_id": run.id,
+            "workflow_status": run.status.value,
             "success": True,
             "dry_run": bool(dry_run),
             "count": len(results),
@@ -2459,6 +2631,7 @@ class MemoryService:
         actor: ActorContext,
         reason: str,
         at: str,
+        run_id: Optional[str] = None,
         extra: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         merged = dict(metadata)
@@ -2472,11 +2645,15 @@ class MemoryService:
             "at": at,
             "actor": actor.agent_id,
         }
+        if run_id:
+            event["run_id"] = run_id
         if extra:
             event.update(extra)
         trail.append(event)
         merged["fast_memory_distillation"] = trail
         merged["last_fast_memory_distillation"] = event
+        if run_id:
+            merged["last_fast_distillation_run_id"] = run_id
         return merged
 
     def list_fast(
@@ -2512,6 +2689,7 @@ class MemoryService:
         reason: str,
         cluster_id: Optional[str] = None,
         resolved: Optional[bool] = None,
+        distillation_run_id: Optional[str] = None,
     ) -> dict[str, Any]:
         normalized_summary = self._require_non_empty_reason(summary, field_name="summary")
         normalized_reason = self._require_non_empty_reason(reason)
@@ -2524,6 +2702,7 @@ class MemoryService:
             actor=actor,
             reason=normalized_reason,
             at=now_iso,
+            run_id=distillation_run_id,
             extra={"summary": normalized_summary},
         )
         entry.metadata["distillation_summary"] = normalized_summary
@@ -2545,6 +2724,7 @@ class MemoryService:
                     "distillation_status": entry.distillation_status.value,
                     "cluster_id": entry.cluster_id,
                     "resolved": entry.resolved,
+                    "distillation_run_id": distillation_run_id,
                     "summary_preview": self._preview_text(normalized_summary),
                 },
             )
@@ -2556,6 +2736,7 @@ class MemoryService:
             "cluster_id": entry.cluster_id,
             "resolved": entry.resolved,
             "distilled_at": entry.distilled_at,
+            "distillation_run_id": distillation_run_id,
             "summary": normalized_summary,
         }
 
@@ -2566,6 +2747,7 @@ class MemoryService:
         actor: ActorContext,
         reason: str,
         resolved: Optional[bool] = None,
+        distillation_run_id: Optional[str] = None,
     ) -> dict[str, Any]:
         normalized_reason = self._require_non_empty_reason(reason)
         entry = self._get_fast_for_mutation(entry_id, actor)
@@ -2577,6 +2759,7 @@ class MemoryService:
             actor=actor,
             reason=normalized_reason,
             at=now_iso,
+            run_id=distillation_run_id,
         )
         entry.distillation_status = FastMemoryDistillationStatus.DISCARDED
         entry.distilled_at = now_iso
@@ -2593,6 +2776,7 @@ class MemoryService:
                 payload={
                     "distillation_status": entry.distillation_status.value,
                     "resolved": entry.resolved,
+                    "distillation_run_id": distillation_run_id,
                 },
             )
         )
@@ -2602,6 +2786,7 @@ class MemoryService:
             "distillation_status": entry.distillation_status.value,
             "resolved": entry.resolved,
             "distilled_at": entry.distilled_at,
+            "distillation_run_id": distillation_run_id,
         }
 
     async def promote_fast(
@@ -2615,6 +2800,7 @@ class MemoryService:
         visibility: MemoryScope = MemoryScope.SHARED,
         summary: Optional[str] = None,
         confidence: float = 0.7,
+        distillation_run_id: Optional[str] = None,
     ) -> dict[str, Any]:
         normalized_reason = self._require_non_empty_reason(reason)
         entry = self._get_fast_for_mutation(entry_id, actor)
@@ -2628,6 +2814,7 @@ class MemoryService:
                 "distillation_status": entry.distillation_status.value,
                 "target_tier": (target_tier or self.config.promotion_default_target_tier).value,
                 "memory_type": memory_type.value,
+                "distillation_run_id": distillation_run_id,
                 "duplicate": False,
                 "already_promoted": True,
             }
@@ -2647,6 +2834,7 @@ class MemoryService:
             "selection_score": entry.selection_score,
             "reason": normalized_reason,
             "promoted_at": now_iso,
+            "distillation_run_id": distillation_run_id,
         }
         if summary is not None and str(summary).strip():
             promoted_metadata["fast_memory_summary"] = str(summary).strip()
@@ -2702,6 +2890,7 @@ class MemoryService:
             actor=actor,
             reason=normalized_reason,
             at=now_iso,
+            run_id=distillation_run_id,
             extra={
                 "promoted_entry_id": promoted_entry_id,
                 "target_tier": effective_tier.value,
@@ -2723,6 +2912,7 @@ class MemoryService:
                     "promoted_entry_id": promoted_entry_id,
                     "target_tier": effective_tier.value,
                     "memory_type": memory_type.value,
+                    "distillation_run_id": distillation_run_id,
                     "duplicate": False,
                 },
             )
@@ -2734,6 +2924,7 @@ class MemoryService:
             "distillation_status": entry.distillation_status.value,
             "target_tier": effective_tier.value,
             "memory_type": memory_type.value,
+            "distillation_run_id": distillation_run_id,
             "duplicate": False,
             "already_promoted": False,
         }
