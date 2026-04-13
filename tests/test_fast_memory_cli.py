@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from src import fast_memory_cli
@@ -110,3 +111,186 @@ def test_run_command_invokes_selected_harness(runtime, monkeypatch, tmp_path: Pa
     assert captured["command"] == ["codex"]
     assert "Candidate pack:" in str(captured["input"])
     assert (tmp_path / "candidate-pack.json").exists()
+
+
+def test_apply_command_dry_run_by_default(runtime, monkeypatch, tmp_path: Path, capsys):
+    runtime.service.config.fast_memory_agent_distillation_apply_enabled = True
+    actor = ActorContext(
+        agent_id="cli-agent",
+        user_id="cli-user",
+        workspace_id="ws-test",
+        project_id="prj-test",
+    )
+    first = runtime.service.log_fast(
+        {
+            "content": "L'utente y vedeva solo il menu x.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "component": "menu-engine",
+        },
+        actor=actor,
+    )
+    second = runtime.service.log_fast(
+        {
+            "content": "L'utente z vedeva solo il menu x.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "component": "menu-engine",
+        },
+        actor=actor,
+    )
+
+    payload_path = tmp_path / "result.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "decisions": [
+                    {
+                        "cluster_id": "cluster-menu",
+                        "action": "promote",
+                        "summary": "La gestione menu dipende dai permessi utente consolidati.",
+                        "confidence": 0.9,
+                        "source_entry_ids": [first["entry_id"], second["entry_id"]],
+                        "strong_memory": {
+                            "content": "La gestione menu dipende dal corretto allineamento dei permessi utente.",
+                            "context": "menu troubleshooting",
+                            "type": "fact",
+                            "tier": "tier-2",
+                            "visibility": "shared",
+                            "tags": ["menu", "permissions"],
+                            "metadata": {"kind": "distilled-knowledge"},
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(fast_memory_cli, "get_config", lambda: runtime.config)
+    monkeypatch.setattr(fast_memory_cli, "build_runtime", lambda config: runtime)
+
+    exit_code = fast_memory_cli.main(
+        [
+            "apply",
+            "--agent-id",
+            "cli-agent",
+            "--reason",
+            "preview distillation result",
+            "--input",
+            str(payload_path),
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = json.loads(capsys.readouterr().out)
+    assert stdout["success"] is True
+    assert stdout["dry_run"] is True
+    assert runtime.service.get_fast(first["entry_id"], actor).distillation_status.value == "pending"
+
+
+def test_apply_command_applies_when_requested(runtime, monkeypatch, tmp_path: Path, capsys):
+    runtime.service.config.fast_memory_agent_distillation_apply_enabled = True
+    actor = ActorContext(
+        agent_id="cli-agent",
+        user_id="cli-user",
+        workspace_id="ws-test",
+        project_id="prj-test",
+    )
+    first = runtime.service.log_fast(
+        {
+            "content": "L'utente y vedeva solo il menu x.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "component": "menu-engine",
+        },
+        actor=actor,
+    )
+    second = runtime.service.log_fast(
+        {
+            "content": "L'utente z vedeva solo il menu x.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "component": "menu-engine",
+        },
+        actor=actor,
+    )
+
+    payload_path = tmp_path / "result.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "decisions": [
+                    {
+                        "cluster_id": "cluster-menu",
+                        "action": "promote",
+                        "summary": "La gestione menu dipende dai permessi utente consolidati.",
+                        "confidence": 0.9,
+                        "source_entry_ids": [first["entry_id"], second["entry_id"]],
+                        "strong_memory": {
+                            "content": "La gestione menu dipende dal corretto allineamento dei permessi utente.",
+                            "context": "menu troubleshooting",
+                            "type": "fact",
+                            "tier": "tier-2",
+                            "visibility": "shared",
+                            "tags": ["menu", "permissions"],
+                            "metadata": {"kind": "distilled-knowledge"},
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(fast_memory_cli, "get_config", lambda: runtime.config)
+    monkeypatch.setattr(fast_memory_cli, "build_runtime", lambda config: runtime)
+
+    exit_code = fast_memory_cli.main(
+        [
+            "apply",
+            "--agent-id",
+            "cli-agent",
+            "--reason",
+            "apply distillation result",
+            "--input",
+            str(payload_path),
+            "--apply",
+        ]
+    )
+
+    assert exit_code == 0
+    stdout = json.loads(capsys.readouterr().out)
+    assert stdout["success"] is True
+    assert stdout["dry_run"] is False
+    assert stdout["results"][0]["promoted_entry_id"]
+    assert runtime.service.get_fast(first["entry_id"], actor).distillation_status.value == "promoted"
+    assert runtime.service.get_fast(second["entry_id"], actor).distillation_status.value == "summarized"
+
+
+def test_apply_command_rejects_invalid_json(runtime, monkeypatch, tmp_path: Path, capsys):
+    runtime.service.config.fast_memory_agent_distillation_apply_enabled = True
+    payload_path = tmp_path / "result.json"
+    payload_path.write_text("{invalid", encoding="utf-8")
+
+    monkeypatch.setattr(fast_memory_cli, "get_config", lambda: runtime.config)
+    monkeypatch.setattr(fast_memory_cli, "build_runtime", lambda config: runtime)
+
+    exit_code = fast_memory_cli.main(
+        [
+            "apply",
+            "--agent-id",
+            "cli-agent",
+            "--reason",
+            "apply distillation result",
+            "--input",
+            str(payload_path),
+        ]
+    )
+
+    assert exit_code == 2
+    assert "not valid JSON" in capsys.readouterr().err
