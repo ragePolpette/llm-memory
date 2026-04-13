@@ -646,6 +646,7 @@ def register_tools(server: Server, memory_service: MemoryService):
                         "agent_id": {"type": "string"},
                         "user_id": {"type": "string"},
                         "scope": {"type": "object"},
+                        "run_id": {"type": "string"},
                         "reason": {"type": "string"},
                         "dry_run": {"type": "boolean", "default": True},
                         "payload": {"type": "object"},
@@ -1103,6 +1104,7 @@ def register_tools(server: Server, memory_service: MemoryService):
                     actor=actor,
                     payload=arguments["payload"],
                     reason=arguments["reason"],
+                    run_id=arguments.get("run_id"),
                     dry_run=bool(arguments.get("dry_run", True)),
                 )
             except PermissionError as exc:

@@ -191,6 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     apply_parser = subparsers.add_parser("apply", help="Applica un output JSON di distillazione agentica.")
     _add_actor_arguments(apply_parser)
+    apply_parser.add_argument("--run-id", help="Run id della prepare da collegare all'apply.")
     apply_parser.add_argument("--input", required=True, help="Path al file JSON con il contract decisions[].")
     apply_parser.add_argument(
         "--apply",
@@ -215,6 +216,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     actor=actor,
                     payload=_load_apply_payload(args.input),
                     reason=args.reason,
+                    run_id=args.run_id,
                     dry_run=not bool(args.apply),
                 )
             )

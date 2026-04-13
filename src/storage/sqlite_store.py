@@ -15,6 +15,8 @@ from ..models import (
     EntryLink,
     EntryStatus,
     EntryType,
+    FastMemoryDistillationRun,
+    FastMemoryDistillationRunStatus,
     FastMemoryDistillationStatus,
     FastMemoryEntry,
     MemoryEntry,
@@ -156,6 +158,31 @@ class SQLiteMemoryStore:
                     ON fast_memory_entries(distillation_status, resolved, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_fast_memory_event
                     ON fast_memory_entries(event_type, agent_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS fast_memory_distillation_runs (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    user_id TEXT,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    cluster_ids_json TEXT NOT NULL,
+                    source_entry_ids_json TEXT NOT NULL,
+                    prepared_payload_json TEXT NOT NULL,
+                    agent_output_payload_json TEXT NOT NULL,
+                    apply_result_payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    prepared_at TEXT,
+                    reviewed_at TEXT,
+                    applied_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_fast_memory_runs_scope
+                    ON fast_memory_distillation_runs(workspace_id, project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_fast_memory_runs_status
+                    ON fast_memory_distillation_runs(status, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS embedding_versions (
                     version_id TEXT PRIMARY KEY,
@@ -776,6 +803,114 @@ class SQLiteMemoryStore:
             row = conn.execute(" ".join(sql), params).fetchone()
             return int(row["c"] if row else 0)
 
+    def add_fast_distillation_run(self, run: FastMemoryDistillationRun) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO fast_memory_distillation_runs (
+                    id, workspace_id, project_id, agent_id, user_id, status, reason,
+                    cluster_ids_json, source_entry_ids_json, prepared_payload_json,
+                    agent_output_payload_json, apply_result_payload_json,
+                    created_at, updated_at, prepared_at, reviewed_at, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run.id,
+                    run.workspace_id,
+                    run.project_id,
+                    run.agent_id,
+                    run.user_id,
+                    run.status.value,
+                    run.reason,
+                    json.dumps(run.cluster_ids, ensure_ascii=True),
+                    json.dumps(run.source_entry_ids, ensure_ascii=True),
+                    json.dumps(run.prepared_payload, ensure_ascii=True, sort_keys=True),
+                    json.dumps(run.agent_output_payload, ensure_ascii=True, sort_keys=True),
+                    json.dumps(run.apply_result_payload, ensure_ascii=True, sort_keys=True),
+                    self._to_iso(run.created_at),
+                    self._to_iso(run.updated_at),
+                    self._to_iso(run.prepared_at) if run.prepared_at is not None else None,
+                    self._to_iso(run.reviewed_at) if run.reviewed_at is not None else None,
+                    self._to_iso(run.applied_at) if run.applied_at is not None else None,
+                ),
+            )
+
+    def update_fast_distillation_run(self, run: FastMemoryDistillationRun) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE fast_memory_distillation_runs
+                SET workspace_id=?, project_id=?, agent_id=?, user_id=?, status=?, reason=?,
+                    cluster_ids_json=?, source_entry_ids_json=?, prepared_payload_json=?,
+                    agent_output_payload_json=?, apply_result_payload_json=?, updated_at=?,
+                    prepared_at=?, reviewed_at=?, applied_at=?
+                WHERE id=?
+                """,
+                (
+                    run.workspace_id,
+                    run.project_id,
+                    run.agent_id,
+                    run.user_id,
+                    run.status.value,
+                    run.reason,
+                    json.dumps(run.cluster_ids, ensure_ascii=True),
+                    json.dumps(run.source_entry_ids, ensure_ascii=True),
+                    json.dumps(run.prepared_payload, ensure_ascii=True, sort_keys=True),
+                    json.dumps(run.agent_output_payload, ensure_ascii=True, sort_keys=True),
+                    json.dumps(run.apply_result_payload, ensure_ascii=True, sort_keys=True),
+                    self._to_iso(run.updated_at),
+                    self._to_iso(run.prepared_at) if run.prepared_at is not None else None,
+                    self._to_iso(run.reviewed_at) if run.reviewed_at is not None else None,
+                    self._to_iso(run.applied_at) if run.applied_at is not None else None,
+                    run.id,
+                ),
+            )
+
+    def get_fast_distillation_run(self, run_id: str) -> Optional[FastMemoryDistillationRun]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM fast_memory_distillation_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._fast_distillation_run_from_row(row)
+
+    def list_fast_distillation_runs(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        status: FastMemoryDistillationRunStatus | None = None,
+        limit: int = 50,
+    ) -> list[FastMemoryDistillationRun]:
+        sql = ["SELECT * FROM fast_memory_distillation_runs WHERE 1 = 1"]
+        params: list[object] = []
+
+        if workspace_id is not None:
+            sql.append("AND workspace_id = ?")
+            params.append(workspace_id)
+
+        if project_id is not None:
+            sql.append("AND project_id = ?")
+            params.append(project_id)
+
+        if agent_id is not None:
+            sql.append("AND agent_id = ?")
+            params.append(agent_id)
+
+        if status is not None:
+            sql.append("AND status = ?")
+            params.append(status.value)
+
+        sql.append("ORDER BY created_at DESC, id DESC LIMIT ?")
+        params.append(max(1, int(limit)))
+
+        with self._conn() as conn:
+            rows = conn.execute(" ".join(sql), params).fetchall()
+            return [self._fast_distillation_run_from_row(row) for row in rows]
+
     def count_entries(
         self,
         *,
@@ -1017,6 +1152,28 @@ class SQLiteMemoryStore:
             selection_score=float(row["selection_score"]) if row["selection_score"] is not None else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _fast_distillation_run_from_row(row: sqlite3.Row) -> FastMemoryDistillationRun:
+        return FastMemoryDistillationRun(
+            id=row["id"],
+            workspace_id=row["workspace_id"],
+            project_id=row["project_id"],
+            agent_id=row["agent_id"],
+            user_id=row["user_id"],
+            status=FastMemoryDistillationRunStatus(row["status"]),
+            reason=row["reason"],
+            cluster_ids=json.loads(row["cluster_ids_json"]),
+            source_entry_ids=json.loads(row["source_entry_ids_json"]),
+            prepared_payload=json.loads(row["prepared_payload_json"]),
+            agent_output_payload=json.loads(row["agent_output_payload_json"]),
+            apply_result_payload=json.loads(row["apply_result_payload_json"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            prepared_at=row["prepared_at"],
+            reviewed_at=row["reviewed_at"],
+            applied_at=row["applied_at"],
         )
 
     @staticmethod
