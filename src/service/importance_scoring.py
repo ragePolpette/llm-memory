@@ -387,6 +387,7 @@ def _fast_quality_score(metadata: dict[str, Any], recurrence_count: int) -> floa
         ("distinct_task_count", 4),
         ("distinct_day_count", 3),
         ("outcome_reuse_count", 3),
+        ("distinct_entity_count", 5),
     ):
         value = metadata.get(key)
         if value is None:
@@ -396,6 +397,12 @@ def _fast_quality_score(metadata: dict[str, Any], recurrence_count: int) -> floa
         except (TypeError, ValueError):
             continue
         signals.append(_clamp01(numeric / ceiling, default=0.0))
+
+    for key in ("time_spread_score", "entity_spread_score", "semantic_cohesion", "scope_alignment_score"):
+        value = metadata.get(key)
+        if value is None:
+            continue
+        signals.append(_clamp01(value, default=0.0))
 
     base_quality = 0.35 if int(recurrence_count) > 1 else 0.0
     if not signals:
@@ -417,6 +424,14 @@ def _fast_noise_penalty(metadata: dict[str, Any], *, event_type: str) -> float:
         if value is None:
             continue
         penalties.append(_clamp01(value, default=0.0))
+
+    semantic_cohesion = metadata.get("semantic_cohesion")
+    if semantic_cohesion is not None:
+        penalties.append(_clamp01(1.0 - float(semantic_cohesion), default=0.0))
+
+    scope_alignment = metadata.get("scope_alignment_score")
+    if scope_alignment is not None:
+        penalties.append(_clamp01(1.0 - float(scope_alignment), default=0.0))
 
     burst_retry_count = metadata.get("burst_retry_count")
     if burst_retry_count is not None:
