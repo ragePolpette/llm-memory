@@ -574,6 +574,58 @@ async def admin_fast_memory_candidates(request: Request):
     )
 
 
+async def admin_fast_memory_distillation_runs(request: Request):
+    if runtime is None:
+        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+    try:
+        limit = _parse_limit(request.query_params.get("limit"), default=50, maximum=200)
+        payload = runtime.service.admin_list_fast_distillation_runs(
+            workspace_id=request.query_params.get("workspace_id"),
+            project_id=request.query_params.get("project_id"),
+            agent_id=request.query_params.get("agent_id"),
+            status=request.query_params.get("status"),
+            limit=limit,
+        )
+    except ValueError as exc:
+        return _admin_bad_request(str(exc))
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "llm-memory",
+            "api": "v2",
+            "runs": payload,
+        }
+    )
+
+
+async def admin_fast_memory_distillation_run(request: Request):
+    if runtime is None:
+        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+    run_id = str(request.path_params.get("run_id", "")).strip()
+    if not run_id:
+        return _admin_bad_request("run_id is required")
+    payload = runtime.service.admin_get_fast_distillation_run(run_id)
+    if payload is None:
+        return JSONResponse(
+            {
+                "status": "error",
+                "error": {
+                    "type": "not_found",
+                    "message": f"Fast-memory distillation run '{run_id}' was not found",
+                },
+            },
+            status_code=404,
+        )
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "llm-memory",
+            "api": "v2",
+            "run": payload,
+        }
+    )
+
+
 async def admin_prepare_fast_distillation(request: Request):
     if runtime is None:
         return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
@@ -626,6 +678,7 @@ async def admin_apply_fast_distillation(request: Request):
             actor=actor,
             payload=payload,
             reason=_require_body_reason(body.get("reason")),
+            run_id=_normalize_optional_string(body.get("run_id")),
             dry_run=_normalize_payload_bool(body.get("dry_run"), field_name="dry_run", default=True),
         )
     except PermissionError as exc:
@@ -677,6 +730,8 @@ routes = [
     Route("/admin/projects", admin_projects, methods=["GET"]),
     Route("/admin/fast-memory", admin_fast_memory, methods=["GET"]),
     Route("/admin/fast-memory/candidates", admin_fast_memory_candidates, methods=["GET"]),
+    Route("/admin/fast-memory/distillation/runs", admin_fast_memory_distillation_runs, methods=["GET"]),
+    Route("/admin/fast-memory/distillation/runs/{run_id:str}", admin_fast_memory_distillation_run, methods=["GET"]),
     Route("/admin/fast-memory/distillation/prepare", admin_prepare_fast_distillation, methods=["POST"]),
     Route("/admin/fast-memory/distillation/apply", admin_apply_fast_distillation, methods=["POST"]),
     Route("/admin/fast-memory/{entry_id:str}", admin_fast_memory_entry, methods=["GET"]),

@@ -52,6 +52,14 @@ class FastMemoryDistillationStatus(str, Enum):
     DISCARDED = "discarded"
 
 
+class FastMemoryDistillationRunStatus(str, Enum):
+    """Stato del workflow di una distillation run."""
+
+    PREPARED = "prepared"
+    REVIEWED = "reviewed"
+    APPLIED = "applied"
+
+
 class ScopeRef(BaseModel):
     """Scope gerarchico: workspace/project/user/agent."""
 
@@ -191,6 +199,28 @@ class AuditEvent(BaseModel):
     reason: Optional[str] = None
     payload: dict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class FastMemoryDistillationRun(BaseModel):
+    """Run tracciata del workflow prepare/review/apply della fast memory."""
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    workspace_id: str = "default"
+    project_id: str = "default"
+    agent_id: str
+    user_id: Optional[str] = None
+    status: FastMemoryDistillationRunStatus = FastMemoryDistillationRunStatus.PREPARED
+    reason: str
+    cluster_ids: list[str] = Field(default_factory=list)
+    source_entry_ids: list[str] = Field(default_factory=list)
+    prepared_payload: dict = Field(default_factory=dict)
+    agent_output_payload: dict = Field(default_factory=dict)
+    apply_result_payload: dict = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    prepared_at: Optional[datetime] = None
+    reviewed_at: Optional[datetime] = None
+    applied_at: Optional[datetime] = None
 
 
 class MemoryBundle(BaseModel):

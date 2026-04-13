@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from src.config import MemoryScope, Tier
-from src.models import EntryType, FastMemoryDistillationStatus
+from src.models import EntryType, FastMemoryDistillationRunStatus, FastMemoryDistillationStatus
 from src.service.memory_service import ActorContext, MemoryInputError
 
 
@@ -395,14 +395,22 @@ async def test_apply_fast_distillation_dry_run_does_not_mutate_entries(service):
     second_entry = service.get_fast(second["entry_id"], actor)
     assert result["success"] is True
     assert result["dry_run"] is True
+    assert result["workflow_status"] == FastMemoryDistillationRunStatus.REVIEWED.value
+    assert result["run_id"]
     assert result["results"][0]["action"] == "promote"
     assert first_entry is not None and first_entry.distillation_status == FastMemoryDistillationStatus.PENDING
     assert second_entry is not None and second_entry.distillation_status == FastMemoryDistillationStatus.PENDING
+
+    run = service.store.get_fast_distillation_run(result["run_id"])
+    assert run is not None
+    assert run.status == FastMemoryDistillationRunStatus.REVIEWED
+    assert run.apply_result_payload["dry_run"] is True
 
 
 @pytest.mark.asyncio
 async def test_apply_fast_distillation_promotes_anchor_and_summarizes_remaining(service):
     service.config.fast_memory_agent_distillation_apply_enabled = True
+    service.config.fast_memory_agent_distillation_enabled = True
     actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
     first = service.log_fast(
         {
@@ -427,9 +435,16 @@ async def test_apply_fast_distillation_promotes_anchor_and_summarizes_remaining(
         actor,
     )
 
+    prepared = service.prepare_fast_distillation(
+        actor=actor,
+        reason="prepare reviewed cluster",
+        top_k=1,
+    )
+
     result = await service.apply_fast_distillation(
         actor=actor,
         reason="apply reviewed distillation output",
+        run_id=prepared["run_id"],
         dry_run=False,
         payload={
             "decisions": [
@@ -457,11 +472,22 @@ async def test_apply_fast_distillation_promotes_anchor_and_summarizes_remaining(
     second_entry = service.get_fast(second["entry_id"], actor)
     promoted_entry = service.get(result["results"][0]["promoted_entry_id"], actor)
     assert result["dry_run"] is False
+    assert result["workflow_status"] == FastMemoryDistillationRunStatus.APPLIED.value
+    assert result["run_id"] == prepared["run_id"]
     assert first_entry is not None and first_entry.distillation_status == FastMemoryDistillationStatus.PROMOTED
     assert second_entry is not None and second_entry.distillation_status == FastMemoryDistillationStatus.SUMMARIZED
     assert promoted_entry is not None
     assert promoted_entry.content.startswith("La gestione menu funziona")
     assert promoted_entry.metadata["fast_memory_origin"]["entry_id"] == first["entry_id"]
+    assert promoted_entry.metadata["fast_memory_origin"]["distillation_run_id"] == prepared["run_id"]
+    assert first_entry.metadata["last_fast_distillation_run_id"] == prepared["run_id"]
+    assert second_entry.metadata["last_fast_distillation_run_id"] == prepared["run_id"]
+
+    run = service.store.get_fast_distillation_run(prepared["run_id"])
+    assert run is not None
+    assert run.status == FastMemoryDistillationRunStatus.APPLIED
+    assert run.agent_output_payload["decisions"][0]["cluster_id"] == "cluster-menu"
+    assert run.apply_result_payload["dry_run"] is False
 
 
 @pytest.mark.asyncio
@@ -476,3 +502,50 @@ async def test_apply_fast_distillation_rejects_invalid_contract(service):
             dry_run=True,
             payload={"decisions": []},
         )
+
+
+def test_prepare_fast_distillation_creates_tracked_run(service):
+    service.config.fast_memory_agent_distillation_enabled = True
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+    service.log_fast(
+        {
+            "content": "L'utente y vedeva solo il menu x.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "kind": "bug",
+            "component": "menu-engine",
+            "recurrence_count": 2,
+        },
+        actor,
+    )
+
+    result = service.prepare_fast_distillation(
+        actor=actor,
+        reason="prepare tracked run",
+        top_k=1,
+    )
+
+    assert result["run_id"]
+    assert result["workflow_status"] == FastMemoryDistillationRunStatus.PREPARED.value
+    run = service.store.get_fast_distillation_run(result["run_id"])
+    assert run is not None
+    assert run.status == FastMemoryDistillationRunStatus.PREPARED
+    assert run.prepared_payload["prepared_count"] >= 1
+    assert run.cluster_ids
+
+
+def test_admin_list_fast_distillation_runs_returns_serialized_history(service):
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+    run = service._new_fast_distillation_run(  # noqa: SLF001 - direct coverage of service-owned persistence
+        actor=actor,
+        reason="history check",
+        cluster_ids=["cluster-1"],
+        source_entry_ids=["fast-1"],
+        prepared_payload={"prepared_count": 1},
+    )
+
+    payload = service.admin_list_fast_distillation_runs(workspace_id="ws-test", project_id="prj-test", limit=10)
+
+    assert payload["count"] >= 1
+    assert payload["items"][0]["id"] == run.id
+    assert payload["items"][0]["status"] == FastMemoryDistillationRunStatus.PREPARED.value
