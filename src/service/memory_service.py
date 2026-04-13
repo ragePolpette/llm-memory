@@ -1200,6 +1200,10 @@ class MemoryService:
         reason: str,
         dry_run: bool = True,
     ) -> dict[str, Any]:
+        if not self.config.fast_memory_agent_distillation_apply_enabled:
+            raise PermissionError(
+                "Fast-memory distillation apply is disabled. Set FAST_MEMORY_AGENT_DISTILLATION_APPLY_ENABLED=true to enable."
+            )
         normalized_reason = self._require_non_empty_reason(reason)
         decisions = self._normalize_fast_distillation_payload(payload)
         results: list[dict[str, Any]] = []

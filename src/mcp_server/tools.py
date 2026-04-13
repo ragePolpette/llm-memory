@@ -51,6 +51,7 @@ def _require_explicit_project_scope(name: str, arguments: dict, service: MemoryS
         "memory.get_fast",
         "memory.rank_fast_candidates",
         "memory.prepare_fast_distillation",
+        "memory.apply_fast_distillation",
         "memory.summarize_fast",
         "memory.discard_fast",
         "memory.promote_fast",
@@ -634,6 +635,25 @@ def register_tools(server: Server, memory_service: MemoryService):
                 },
             ),
             Tool(
+                name="memory.apply_fast_distillation",
+                description=(
+                    "Applica l'output JSON della distillazione agentica. Protetto, con dry_run=true di default "
+                    "per validare le decisioni prima di mutare fast memory o memoria forte."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string"},
+                        "user_id": {"type": "string"},
+                        "scope": {"type": "object"},
+                        "reason": {"type": "string"},
+                        "dry_run": {"type": "boolean", "default": True},
+                        "payload": {"type": "object"},
+                    },
+                    "required": ["agent_id", "reason", "payload"],
+                },
+            ),
+            Tool(
                 name="memory.summarize_fast",
                 description=(
                     "Segna una fast-memory entry come sintetizzata e salva un summary di distillazione "
@@ -880,7 +900,7 @@ def register_tools(server: Server, memory_service: MemoryService):
                     "multi_project_enabled": bool(memory_service.config.multi_project_enabled),
                     "scope_hierarchy": ["project", "workspace", "global"],
                     "capabilities": [
-                        "list_projects/get_project_info/create_project/scope_overview/add/log_fast/list_fast/get_fast/rank_fast_candidates/prepare_fast_distillation/summarize_fast/discard_fast/promote_fast/search/get/invalidate/promote/reembed/export/import"
+                        "list_projects/get_project_info/create_project/scope_overview/add/log_fast/list_fast/get_fast/rank_fast_candidates/prepare_fast_distillation/apply_fast_distillation/summarize_fast/discard_fast/promote_fast/search/get/invalidate/promote/reembed/export/import"
                     ],
                     "tool_map": {
                         "generic": {
@@ -891,6 +911,7 @@ def register_tools(server: Server, memory_service: MemoryService):
                             "memory.get_fast": "Recupera una fast-memory entry per id.",
                             "memory.rank_fast_candidates": "Fase 1 matematica: cluster e ranking candidati.",
                             "memory.prepare_fast_distillation": "Fase 2 protetta: prepara pack e prompt per distillazione agentica.",
+                            "memory.apply_fast_distillation": "Applica l'output JSON della distillazione agentica con dry_run di default.",
                             "memory.summarize_fast": "Segna una fast-memory entry come sintetizzata.",
                             "memory.discard_fast": "Scarta una fast-memory entry nel processo di distillazione.",
                             "memory.promote_fast": "Promuove una fast-memory entry nella memoria forte.",
@@ -1070,6 +1091,38 @@ def register_tools(server: Server, memory_service: MemoryService):
                     json.dumps(
                         {
                             "error_type": "permission_error",
+                            "message": str(exc),
+                        }
+                    )
+                ) from exc
+            return _json_text({"api_version": "v2", **payload})
+
+        if name == "memory.apply_fast_distillation":
+            try:
+                payload = await memory_service.apply_fast_distillation(
+                    actor=actor,
+                    payload=arguments["payload"],
+                    reason=arguments["reason"],
+                    dry_run=bool(arguments.get("dry_run", True)),
+                )
+            except PermissionError as exc:
+                import json
+
+                raise ValueError(
+                    json.dumps(
+                        {
+                            "error_type": "permission_error",
+                            "message": str(exc),
+                        }
+                    )
+                ) from exc
+            except ValueError as exc:
+                import json
+
+                raise ValueError(
+                    json.dumps(
+                        {
+                            "error_type": "validation_error",
                             "message": str(exc),
                         }
                     )

@@ -344,6 +344,7 @@ async def test_promote_fast_denies_cross_project_promotion(service):
 
 @pytest.mark.asyncio
 async def test_apply_fast_distillation_dry_run_does_not_mutate_entries(service):
+    service.config.fast_memory_agent_distillation_apply_enabled = True
     actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
     first = service.log_fast(
         {
@@ -401,6 +402,7 @@ async def test_apply_fast_distillation_dry_run_does_not_mutate_entries(service):
 
 @pytest.mark.asyncio
 async def test_apply_fast_distillation_promotes_anchor_and_summarizes_remaining(service):
+    service.config.fast_memory_agent_distillation_apply_enabled = True
     actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
     first = service.log_fast(
         {
@@ -464,6 +466,7 @@ async def test_apply_fast_distillation_promotes_anchor_and_summarizes_remaining(
 
 @pytest.mark.asyncio
 async def test_apply_fast_distillation_rejects_invalid_contract(service):
+    service.config.fast_memory_agent_distillation_apply_enabled = True
     actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
 
     with pytest.raises(ValueError, match="payload.decisions must contain at least one decision"):
