@@ -21,6 +21,7 @@ from starlette.types import Receive, Scope, Send
 from src.bootstrap import build_runtime
 from src.config import get_config
 from src.mcp_server.tools import register_tools
+from src.service.memory_service import ActorContext
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,19 @@ def _admin_bad_request(message: str) -> JSONResponse:
     )
 
 
+def _admin_forbidden(message: str) -> JSONResponse:
+    return JSONResponse(
+        {
+            "status": "error",
+            "error": {
+                "type": "forbidden",
+                "message": message,
+            },
+        },
+        status_code=403,
+    )
+
+
 def _parse_limit(raw_value: str | None, *, default: int = 100, minimum: int = 1, maximum: int = 500) -> int:
     if raw_value is None or not str(raw_value).strip():
         return default
@@ -209,6 +223,73 @@ def _parse_optional_bool(raw_value: str | None) -> bool | None:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     raise ValueError("resolved must be a boolean value")
+
+
+async def _parse_json_body(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        raise ValueError("request body must be valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+    return payload
+
+
+def _normalize_payload_bool(value: Any, *, field_name: str, default: bool | None = None) -> bool:
+    if value is None:
+        if default is None:
+            raise ValueError(f"{field_name} must be a boolean")
+        return default
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field_name} must be a boolean")
+
+
+def _normalize_payload_int(
+    value: Any,
+    *,
+    field_name: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if value is None:
+        return default
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be an integer") from exc
+    if normalized < minimum or normalized > maximum:
+        raise ValueError(f"{field_name} must be between {minimum} and {maximum}")
+    return normalized
+
+
+def _normalize_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _require_body_reason(value: Any, *, field_name: str = "reason") -> str:
+    normalized = _normalize_optional_string(value)
+    if not normalized:
+        raise ValueError(f"{field_name} is required")
+    return normalized
+
+
+def _build_admin_actor(payload: dict[str, Any]) -> ActorContext:
+    if runtime is None:
+        raise RuntimeError("Server not initialized")
+    agent_id = _normalize_optional_string(payload.get("agent_id"))
+    if not agent_id:
+        raise ValueError("agent_id is required")
+    return ActorContext(
+        agent_id=agent_id,
+        user_id=_normalize_optional_string(payload.get("user_id")),
+        workspace_id=_normalize_optional_string(payload.get("workspace_id")) or runtime.config.default_workspace_id,
+        project_id=_normalize_optional_string(payload.get("project_id")) or runtime.config.default_project_id,
+    )
 
 
 async def _read_request_body(receive: Receive) -> tuple[bytes, list[dict[str, Any]]]:
@@ -493,6 +574,74 @@ async def admin_fast_memory_candidates(request: Request):
     )
 
 
+async def admin_prepare_fast_distillation(request: Request):
+    if runtime is None:
+        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+    try:
+        payload = await _parse_json_body(request)
+        actor = _build_admin_actor(payload)
+        prepared = runtime.service.prepare_fast_distillation(
+            actor=actor,
+            reason=_require_body_reason(payload.get("reason")),
+            cluster_id=_normalize_optional_string(payload.get("cluster_id")),
+            entry_id=_normalize_optional_string(payload.get("entry_id")),
+            top_k=_normalize_payload_int(
+                payload.get("top_k"),
+                field_name="top_k",
+                default=1,
+                minimum=1,
+                maximum=10,
+            ),
+            include_resolved=_normalize_payload_bool(
+                payload.get("include_resolved"),
+                field_name="include_resolved",
+                default=False,
+            ),
+            distillation_status=_normalize_optional_string(payload.get("distillation_status")),
+        )
+    except PermissionError as exc:
+        return _admin_forbidden(str(exc))
+    except ValueError as exc:
+        return _admin_bad_request(str(exc))
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "llm-memory",
+            "api": "v2",
+            "distillation_prepare": prepared,
+        }
+    )
+
+
+async def admin_apply_fast_distillation(request: Request):
+    if runtime is None:
+        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+    try:
+        body = await _parse_json_body(request)
+        actor = _build_admin_actor(body)
+        payload = body.get("payload")
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object with a decisions array")
+        result = await runtime.service.apply_fast_distillation(
+            actor=actor,
+            payload=payload,
+            reason=_require_body_reason(body.get("reason")),
+            dry_run=_normalize_payload_bool(body.get("dry_run"), field_name="dry_run", default=True),
+        )
+    except PermissionError as exc:
+        return _admin_forbidden(str(exc))
+    except ValueError as exc:
+        return _admin_bad_request(str(exc))
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "llm-memory",
+            "api": "v2",
+            "distillation_apply": result,
+        }
+    )
+
+
 async def admin_fast_memory_entry(request: Request):
     if runtime is None:
         return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
@@ -528,6 +677,8 @@ routes = [
     Route("/admin/projects", admin_projects, methods=["GET"]),
     Route("/admin/fast-memory", admin_fast_memory, methods=["GET"]),
     Route("/admin/fast-memory/candidates", admin_fast_memory_candidates, methods=["GET"]),
+    Route("/admin/fast-memory/distillation/prepare", admin_prepare_fast_distillation, methods=["POST"]),
+    Route("/admin/fast-memory/distillation/apply", admin_apply_fast_distillation, methods=["POST"]),
     Route("/admin/fast-memory/{entry_id:str}", admin_fast_memory_entry, methods=["GET"]),
     Route("/mcp", endpoint=streamable_http_app, methods=["GET", "POST", "DELETE"]),
     Route("/sse", sse_legacy_endpoint, methods=["GET"]),

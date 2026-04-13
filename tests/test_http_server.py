@@ -384,3 +384,151 @@ async def test_admin_fast_memory_candidates_support_include_resolved(monkeypatch
     assert response.status_code == 200
     assert payload["candidates"]["filters"]["include_resolved"] is True
     assert payload["candidates"]["source_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_admin_prepare_fast_distillation_returns_candidate_pack(monkeypatch, service):
+    service.config.fast_memory_agent_distillation_enabled = True
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
+    service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
+    service.log_fast(
+        {
+            "content": "L'utente y vedeva solo il menu x nel portale.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "kind": "bug",
+            "product_area": "authorization",
+            "component": "menu-engine",
+            "entity_refs": ["user:y", "menu:x"],
+            "recurrence_count": 2,
+        },
+        actor,
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service, config=service.config))
+
+    class _Request:
+        async def json(self):
+            return {
+                "agent_id": actor.agent_id,
+                "user_id": actor.user_id,
+                "workspace_id": actor.workspace_id,
+                "project_id": actor.project_id,
+                "reason": "prepare from dashboard",
+                "top_k": 1,
+            }
+
+    response = await http_server.admin_prepare_fast_distillation(_Request())  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["distillation_prepare"]["prepared_count"] >= 1
+    assert payload["distillation_prepare"]["candidates"][0]["component"] == "menu-engine"
+
+
+@pytest.mark.asyncio
+async def test_admin_prepare_fast_distillation_requires_feature_flag(monkeypatch, service):
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service, config=service.config))
+
+    class _Request:
+        async def json(self):
+            return {
+                "agent_id": "agent-admin",
+                "workspace_id": "ws-test",
+                "project_id": "project-alpha",
+                "reason": "prepare from dashboard",
+            }
+
+    response = await http_server.admin_prepare_fast_distillation(_Request())  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 403
+    assert payload["error"]["type"] == "forbidden"
+    assert "FAST_MEMORY_AGENT_DISTILLATION_ENABLED" in payload["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_admin_apply_fast_distillation_supports_dry_run(monkeypatch, service):
+    service.config.fast_memory_agent_distillation_apply_enabled = True
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
+    service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
+    first = service.log_fast(
+        {
+            "content": "L'utente y vedeva solo il menu x nel portale.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "component": "menu-engine",
+        },
+        actor,
+    )
+    second = service.log_fast(
+        {
+            "content": "L'utente z vedeva solo il menu x nel portale.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "component": "menu-engine",
+        },
+        actor,
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service, config=service.config))
+
+    class _Request:
+        async def json(self):
+            return {
+                "agent_id": actor.agent_id,
+                "user_id": actor.user_id,
+                "workspace_id": actor.workspace_id,
+                "project_id": actor.project_id,
+                "reason": "preview apply from dashboard",
+                "payload": {
+                    "decisions": [
+                        {
+                            "cluster_id": "cluster-menu",
+                            "action": "promote",
+                            "summary": "La gestione menu dipende dai permessi utente consolidati.",
+                            "confidence": 0.9,
+                            "source_entry_ids": [first["entry_id"], second["entry_id"]],
+                            "strong_memory": {
+                                "content": "La gestione menu dipende dal corretto allineamento dei permessi utente.",
+                                "context": "menu troubleshooting",
+                                "type": "fact",
+                                "tier": "tier-2",
+                                "visibility": "shared",
+                                "tags": ["menu", "permissions"],
+                                "metadata": {"kind": "distilled-knowledge"},
+                            },
+                        }
+                    ]
+                },
+            }
+
+    response = await http_server.admin_apply_fast_distillation(_Request())  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["distillation_apply"]["success"] is True
+    assert payload["distillation_apply"]["dry_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_admin_apply_fast_distillation_rejects_invalid_contract(monkeypatch, service):
+    service.config.fast_memory_agent_distillation_apply_enabled = True
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service, config=service.config))
+
+    class _Request:
+        async def json(self):
+            return {
+                "agent_id": "agent-admin",
+                "workspace_id": "ws-test",
+                "project_id": "project-alpha",
+                "reason": "invalid apply from dashboard",
+                "payload": {"decisions": []},
+            }
+
+    response = await http_server.admin_apply_fast_distillation(_Request())  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 400
+    assert payload["error"]["type"] == "bad_request"
+    assert "payload.decisions must contain at least one decision" in payload["error"]["message"]
