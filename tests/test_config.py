@@ -74,3 +74,4 @@ def test_startup_diagnostics_contains_runtime_summary(tmp_path: Path):
     assert diagnostics["multi_project_enabled"] is True
     assert diagnostics["self_eval_enforced"] is True
     assert diagnostics["fast_memory_agent_distillation_enabled"] is False
+    assert diagnostics["fast_memory_agent_distillation_apply_enabled"] is False
