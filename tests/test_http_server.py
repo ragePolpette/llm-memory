@@ -387,6 +387,92 @@ async def test_admin_fast_memory_candidates_support_include_resolved(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_admin_fast_memory_candidates_merges_semantic_variants(monkeypatch, service):
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
+    service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
+    service.log_fast(
+        {
+            "content": "Il profilo y nel portale mostrava solo il menu x.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "session_id": "session-a",
+            "kind": "bug",
+            "product_area": "authorization",
+            "component": "menu-engine",
+            "entity_refs": ["user:y", "menu:x"],
+            "recurrence_count": 2,
+        },
+        actor,
+    )
+    service.log_fast(
+        {
+            "content": "Nel portale il profilo z esponeva esclusivamente il menu x.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "session_id": "session-b",
+            "kind": "bug",
+            "product_area": "authorization",
+            "component": "menu-engine",
+            "entity_refs": ["user:z", "menu:x"],
+            "recurrence_count": 2,
+        },
+        actor,
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(query_params={"project_id": "project-alpha", "limit": "10"})
+
+    response = await http_server.admin_fast_memory_candidates(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["candidates"]["count"] >= 1
+    first = payload["candidates"]["items"][0]
+    assert first["member_count"] >= 2
+    assert first["base_cluster_count"] >= 2
+    assert first["merge_version"] == "fast-cluster-v2"
+    assert "semantic_cluster_merge" in first["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_admin_fast_memory_candidates_do_not_merge_weakly_related_scope_only_entries(monkeypatch, service):
+    actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
+    service.create_project(actor=actor, project_id="project-alpha", display_name="Project Alpha")
+    service.log_fast(
+        {
+            "content": "Timeout sull'import batch del catalogo fornitori.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "kind": "incident",
+            "product_area": "operations",
+            "component": "job-runner",
+        },
+        actor,
+    )
+    service.log_fast(
+        {
+            "content": "Permessi errati nella sincronizzazione dei ruoli backoffice.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "kind": "incident",
+            "product_area": "operations",
+            "component": "job-runner",
+        },
+        actor,
+    )
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(query_params={"project_id": "project-alpha", "limit": "10"})
+
+    response = await http_server.admin_fast_memory_candidates(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["candidates"]["count"] >= 2
+    assert all(item["base_cluster_count"] == 1 for item in payload["candidates"]["items"][:2])
+
+
+@pytest.mark.asyncio
 async def test_admin_prepare_fast_distillation_returns_candidate_pack(monkeypatch, service):
     service.config.fast_memory_agent_distillation_enabled = True
     actor = ActorContext(agent_id="agent-admin", user_id="user-admin", workspace_id="ws-test", project_id="project-alpha")
