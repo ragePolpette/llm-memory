@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import argparse
 import json
 import subprocess
@@ -98,6 +99,23 @@ def _prepare_payload(args: argparse.Namespace) -> tuple[Config, PreparedDistilla
     return config, artifacts
 
 
+def _load_apply_payload(input_path: str) -> dict:
+    path = Path(input_path).expanduser().resolve()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Distillation result file was not found: {path}") from exc
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Distillation result file is not valid JSON: {path}") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("Distillation result payload must be a JSON object")
+    return payload
+
+
 def _harness_command(args: argparse.Namespace) -> list[str]:
     executable = args.harness_bin or args.harness
     command = [executable]
@@ -115,6 +133,10 @@ def _print_prepare_summary(artifacts: PreparedDistillationArtifacts) -> None:
         "protection": artifacts.payload.get("protection"),
     }
     sys.stdout.write(json.dumps(summary, ensure_ascii=True, indent=2) + "\n")
+
+
+def _print_apply_summary(result: dict) -> None:
+    sys.stdout.write(json.dumps(result, ensure_ascii=True, indent=2) + "\n")
 
 
 def _run_harness(command: list[str], prompt_text: str) -> int:
@@ -143,6 +165,14 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output-dir")
 
 
+def _add_actor_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--agent-id", required=True)
+    parser.add_argument("--user-id")
+    parser.add_argument("--workspace-id")
+    parser.add_argument("--project-id")
+    parser.add_argument("--reason", required=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llm-memory-fast-distill",
@@ -159,12 +189,47 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--harness-bin")
     run_parser.add_argument("--harness-arg", action="append", default=[])
 
+    apply_parser = subparsers.add_parser("apply", help="Applica un output JSON di distillazione agentica.")
+    _add_actor_arguments(apply_parser)
+    apply_parser.add_argument("--input", required=True, help="Path al file JSON con il contract decisions[].")
+    apply_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Applica davvero le decisioni. Se omesso resta in dry-run.",
+    )
+
     return parser
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "apply":
+        try:
+            config = get_config()
+            runtime = build_runtime(config)
+            actor = _build_actor(args, config)
+            result = asyncio.run(
+                runtime.service.apply_fast_distillation(
+                    actor=actor,
+                    payload=_load_apply_payload(args.input),
+                    reason=args.reason,
+                    dry_run=not bool(args.apply),
+                )
+            )
+        except PermissionError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 2
+        except (FileNotFoundError, ValueError) as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 2
+        except Exception as exc:  # pragma: no cover
+            sys.stderr.write(f"Failed to apply distillation payload: {exc}\n")
+            return 1
+
+        _print_apply_summary(result)
+        return 0
 
     try:
         _, artifacts = _prepare_payload(args)
