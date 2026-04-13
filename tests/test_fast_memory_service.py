@@ -340,3 +340,136 @@ async def test_promote_fast_denies_cross_project_promotion(service):
             actor=actor_b,
             reason="should not cross projects",
         )
+
+
+@pytest.mark.asyncio
+async def test_apply_fast_distillation_dry_run_does_not_mutate_entries(service):
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+    first = service.log_fast(
+        {
+            "content": "L'utente y vedeva solo il menu x.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "component": "menu-engine",
+        },
+        actor,
+    )
+    second = service.log_fast(
+        {
+            "content": "L'utente z vedeva solo il menu x.",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "component": "menu-engine",
+        },
+        actor,
+    )
+
+    result = await service.apply_fast_distillation(
+        actor=actor,
+        reason="preview agentic output",
+        dry_run=True,
+        payload={
+            "decisions": [
+                {
+                    "cluster_id": "cluster-menu",
+                    "action": "promote",
+                    "summary": "La gestione menu dipende dai permessi utente consolidati.",
+                    "confidence": 0.88,
+                    "source_entry_ids": [first["entry_id"], second["entry_id"]],
+                    "strong_memory": {
+                        "content": "La gestione menu dipende dal corretto allineamento dei permessi utente.",
+                        "context": "menu troubleshooting",
+                        "type": "fact",
+                        "tier": "tier-2",
+                        "visibility": "shared",
+                        "tags": ["menu", "permissions"],
+                        "metadata": {"kind": "distilled-knowledge"},
+                    },
+                }
+            ]
+        },
+    )
+
+    first_entry = service.get_fast(first["entry_id"], actor)
+    second_entry = service.get_fast(second["entry_id"], actor)
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["results"][0]["action"] == "promote"
+    assert first_entry is not None and first_entry.distillation_status == FastMemoryDistillationStatus.PENDING
+    assert second_entry is not None and second_entry.distillation_status == FastMemoryDistillationStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_apply_fast_distillation_promotes_anchor_and_summarizes_remaining(service):
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+    first = service.log_fast(
+        {
+            "content": "L'utente y vedeva solo il menu x.",
+            "context": "menu troubleshooting",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "kind": "bug",
+            "component": "menu-engine",
+        },
+        actor,
+    )
+    second = service.log_fast(
+        {
+            "content": "L'utente z vedeva solo il menu x.",
+            "context": "menu troubleshooting",
+            "agent_id": actor.agent_id,
+            "event_type": "incident",
+            "kind": "bug",
+            "component": "menu-engine",
+        },
+        actor,
+    )
+
+    result = await service.apply_fast_distillation(
+        actor=actor,
+        reason="apply reviewed distillation output",
+        dry_run=False,
+        payload={
+            "decisions": [
+                {
+                    "cluster_id": "cluster-menu",
+                    "action": "promote",
+                    "summary": "La gestione menu dipende dai permessi utente consolidati.",
+                    "confidence": 0.91,
+                    "source_entry_ids": [first["entry_id"], second["entry_id"]],
+                    "strong_memory": {
+                        "content": "La gestione menu funziona solo se il profilo utente e la tabella permessi sono riallineati.",
+                        "context": "menu troubleshooting",
+                        "type": "fact",
+                        "tier": "tier-2",
+                        "visibility": "shared",
+                        "tags": ["menu", "permissions"],
+                        "metadata": {"kind": "distilled-knowledge"},
+                    },
+                }
+            ]
+        },
+    )
+
+    first_entry = service.get_fast(first["entry_id"], actor)
+    second_entry = service.get_fast(second["entry_id"], actor)
+    promoted_entry = service.get(result["results"][0]["promoted_entry_id"], actor)
+    assert result["dry_run"] is False
+    assert first_entry is not None and first_entry.distillation_status == FastMemoryDistillationStatus.PROMOTED
+    assert second_entry is not None and second_entry.distillation_status == FastMemoryDistillationStatus.SUMMARIZED
+    assert promoted_entry is not None
+    assert promoted_entry.content.startswith("La gestione menu funziona")
+    assert promoted_entry.metadata["fast_memory_origin"]["entry_id"] == first["entry_id"]
+
+
+@pytest.mark.asyncio
+async def test_apply_fast_distillation_rejects_invalid_contract(service):
+    actor = ActorContext(agent_id="agent-fast", user_id="user-fast", workspace_id="ws-test", project_id="prj-test")
+
+    with pytest.raises(ValueError, match="payload.decisions must contain at least one decision"):
+        await service.apply_fast_distillation(
+            actor=actor,
+            reason="invalid payload",
+            dry_run=True,
+            payload={"decisions": []},
+        )
