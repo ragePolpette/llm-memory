@@ -1,5 +1,5 @@
 # Docker image for the HTTP MCP runtime.
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 LABEL maintainer="LLM Memory"
 LABEL description="Local-first MCP memory service with SQLite persistence"
