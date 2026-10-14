@@ -1,20 +1,20 @@
-# Guida Docker - llm-memory v2
+# Docker Guide
 
-Questa guida e' allineata al runtime attivo del repo:
+This guide matches the active runtime of the repository:
 
-- persistenza `SQLite`
-- vector store `SQLite`
-- endpoint MCP HTTP locale
-- health endpoint su `/health`
+- `SQLite` persistence
+- `SQLite` vector store
+- local MCP HTTP endpoint
+- health endpoint at `/health`
 
 ## Build
 
 ```bash
-cd <project-root>\llm-memory
+cd <project-root>/llm-memory
 docker build -t llm-memory:latest .
 ```
 
-## Avvio con Docker Compose
+## Start with Docker Compose
 
 ```bash
 docker compose up -d --build
@@ -22,28 +22,28 @@ docker compose logs -f llm-memory
 docker compose ps
 ```
 
-Il container espone:
+The container exposes:
 
 - `http://127.0.0.1:8767/health`
 - `http://127.0.0.1:8767/mcp`
 
-## Stop e Restart
+## Stop and Restart
 
 ```bash
 docker compose down
 docker compose restart llm-memory
 ```
 
-## Persistenza
+## Persistence
 
-La directory `./data` dell'host viene montata su `/data` nel container.
+The host `./data` directory is mounted at `/data` in the container.
 
-File principali:
+Main files:
 
 - `/data/memory.db`
 - `/data/exchange/`
 
-## Configurazione Attiva Nel Compose
+## Active Compose Configuration
 
 ```yaml
 environment:
@@ -66,7 +66,7 @@ environment:
 curl http://127.0.0.1:8767/health
 ```
 
-Risposta attesa:
+Expected response:
 
 ```json
 {
@@ -77,46 +77,46 @@ Risposta attesa:
 }
 ```
 
-## MCP HTTP Locale
+## Local MCP HTTP
 
-Il container usa il server HTTP:
+The container runs the HTTP server:
 
 ```bash
 python -m src.mcp_server.http_server
 ```
 
-Per uso locale questo e' piu pratico dello stdio dentro Docker.
+For local use this is more practical than stdio inside Docker.
 
 ## Troubleshooting
 
-### Il container non parte
+### The container does not start
 
 ```bash
 docker compose logs llm-memory
 docker compose build --no-cache
 ```
 
-### Health endpoint non risponde
+### The health endpoint does not respond
 
-Verifica che la porta sia libera e che il container abbia esposto `8767`.
+Check that the port is free and that the container exposes `8767`.
 
 ```bash
 docker compose ps
 docker compose logs llm-memory
 ```
 
-### Reset dati locali
+### Reset local data
 
-Attenzione: questa operazione elimina i dati persistiti nel bind mount `./data`.
+Warning: removing the `./data` bind mount deletes all persisted data.
 
 ```bash
 docker compose down
 ```
 
-Poi rimuovi manualmente la directory `data/` solo se vuoi davvero un reset completo.
+Then remove the `data/` directory manually, only if you want a full reset.
 
 ## Note
 
-- Questa configurazione Docker e' pensata per uso locale o team ristretto.
-- Non e' pensata come deployment pubblico internet-facing.
-- Se vuoi usare stdio MCP, esegui il runtime direttamente fuori dal container.
+- This Docker configuration is intended for local use or a small trusted team.
+- It is not intended as a public, internet-facing deployment. The HTTP server has no authentication; see [SECURITY.md](SECURITY.md).
+- To use MCP over stdio, run the runtime directly outside the container.
