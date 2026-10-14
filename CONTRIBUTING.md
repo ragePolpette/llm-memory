@@ -2,70 +2,64 @@
 
 ## Scope
 
-This project is built as a local-first MCP memory tool.
-The target is a serious single-user or small-team codebase, not a public SaaS.
+This project is a local-first MCP memory tool. The target is a single-user or small-team codebase, not a public SaaS.
 
 ## Local Setup
 
 ```bash
 pip install -e ".[dev]"
-copy .env.example .env
+cp .env.example .env
 pytest -q
 ```
+
+On Windows `cmd`, use `copy .env.example .env`.
 
 Useful entrypoints:
 
 - `python -m src.mcp_server.server`
 - `python -m src.mcp_server.http_server`
 
-## Development Workflow
+## Workflow
 
-1. create a branch: `feature/<short-name>`
-2. keep the change scoped to one coherent slice
-3. implement the change
-4. add or update tests
-5. run local verification
-6. push branch
-7. open PR
-8. merge
+1. Create a branch from `main`: `feature/<short-name>` or `fix/<short-name>`.
+2. Keep the change scoped to one coherent slice.
+3. Add or update tests.
+4. Run the quality gate below.
+5. Push the branch and open a pull request using the template.
+6. Merge after review.
 
-## Quality Bar
+## Quality Gate
 
 Before opening a PR:
 
-- run `ruff check src tests`
-- run `pytest -q`
-- run `pytest --cov=src --cov-report=term-missing --cov-report=xml -q`
-- update docs when behavior changes
-- keep changes scoped to one roadmap item or one coherent block
-- avoid introducing legacy config or outdated docs
+```bash
+ruff check src tests
+pytest -q
+pytest --cov=src --cov-report=term-missing --cov-report=xml -q
+```
 
-The documented local quality gate is:
+Coverage is enforced at 82% through `pyproject.toml`. See [docs/QUALITY_GATE.md](docs/QUALITY_GATE.md).
 
-- `ruff check src tests`
-- `pytest -q`
-- `pytest --cov=src --cov-report=term-missing --cov-report=xml -q`
-
-Coverage is currently enforced at `82%` through project configuration in `pyproject.toml`.
-
-## Golden Path
-
-The repository includes a verified golden path test for:
-
-- `memory.add`
-- `memory.search`
-- `memory.export`
-- `memory.import`
-
-Run it with:
+The golden path test covers `memory.add`, `memory.search`, `memory.export`, and `memory.import`:
 
 ```bash
 pytest tests/test_golden_path.py -q
 ```
 
-## Notes
+Also:
 
-- prefer local-first defaults
-- avoid cloud assumptions in docs and examples
-- keep the MCP tool surface aligned with the runtime actually shipped in this repo
-- use `docs/RELEASE_CHECKLIST.md` when preparing a public-ready release
+- update docs when behavior changes
+- keep the documented MCP tool surface aligned with the runtime shipped in this repo
+- avoid introducing legacy config or outdated docs
+
+## Security Rules
+
+- Never commit secrets, real `.env` files, encryption keys, or local databases. `.gitignore` excludes them; do not weaken it.
+- Use `.env.example` for new configuration keys, with safe defaults.
+- Prefer local-first defaults and do not add cloud assumptions to code, docs, or examples.
+- Keep outbound network blocking and import/export path confinement intact.
+- Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+## Releases
+
+Use [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) when preparing a release.

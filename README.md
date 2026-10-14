@@ -1,37 +1,26 @@
 # llm-memory
 
-`llm-memory` is a local-first MCP memory system for persistent operational knowledge shared across agent workflows.
+Local-first MCP memory server that gives agent workflows persistent, governed, scope-aware operational knowledge.
+
+[![CI](https://github.com/ragePolpette/llm-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/ragePolpette/llm-memory/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 
 It is designed for reusable facts, decisions, assumptions, invalidations, and project-level conventions. It is not a repository code-context retriever. The focus is durable memory with governance, privacy controls, auditability, and explicit scope boundaries.
 
-## What It Does
+## Overview
 
-- stores persistent operational memory locally with SQLite-backed metadata and vectors
-- supports tiered memory for strong memory and fast operational memory
-- provides explicit scope composition across `project`, `workspace`, and `global`
-- exposes MCP tools for strong-memory writes, fast-memory distillation, search, promote, invalidate, import, export, and re-embed workflows
-- keeps audit trails and persistence policies close to the write path
+Most agent workflows handle short-term context well but have no durable memory. `llm-memory` provides a persistent layer that stays inspectable, governed, portable, and local-first. It targets workstation or small-team use, where memory quality, privacy, and explicit control matter more than chat-history convenience.
 
-## Why It Exists
+## Features
 
-Most agent workflows are good at short-term context but weak at durable memory.
-
-`llm-memory` is built to give local agents a persistent memory layer that remains:
-
-- inspectable
-- governed
-- portable
-- local-first
-
-The project is intended for serious workstation or small-team environments where memory quality, privacy, and explicit control matter more than “chat history” convenience.
-
-## Core Concepts
-
-- Tiering: strong memory for durable knowledge and fast memory for episodic operational notes
+- Local persistence with SQLite-backed metadata and vectors
+- Tiered memory: strong memory for durable knowledge, fast memory for episodic operational notes
 - Scope hierarchy: retrieval can compose `project`, `workspace`, and `global`
-- Governance: promotion, invalidation, deduplication, and audit trail
-- Local-first operation: no cloud service required for the default setup
-- Import/export: deterministic interchange through JSONL, Markdown, and SQLite-backed data
+- Governance: promotion, invalidation, deduplication, and an audit trail close to the write path
+- Optional encryption for sensitive payloads and a configurable privacy policy
+- Import/export through JSONL, Markdown (`memory.md`), and SQLite-backed data
+- No cloud service required for the default setup
 
 ## Architecture
 
@@ -60,7 +49,49 @@ Main runtime areas:
 - `src/security/`: privacy and optional encryption helpers
 - `src/interop/`: import/export helpers such as `memory.md`
 
-## MCP Surface
+## Quick Start
+
+Requires Python 3.11 or newer.
+
+```bash
+pip install -e ".[dev]"
+cp .env.example .env
+pytest -q
+```
+
+On Windows `cmd`, use `copy .env.example .env`.
+
+Run as MCP stdio:
+
+```bash
+python -m src.mcp_server.server
+```
+
+Run the local HTTP transport:
+
+```bash
+python -m src.mcp_server.http_server
+curl http://127.0.0.1:8767/health
+```
+
+More detail, including request payload examples, is in [QUICKSTART.md](QUICKSTART.md). Container usage is described in [DOCKER_GUIDE.md](DOCKER_GUIDE.md).
+
+## Configuration
+
+Configuration is read from environment variables. [`.env.example`](.env.example) lists every key with its default. Important defaults:
+
+- `MEMORY_STORAGE_BACKEND=sqlite` and `MEMORY_VECTOR_BACKEND=sqlite`
+- `MEMORY_SQLITE_PATH=./data/memory.db`
+- `MEMORY_IMPORT_EXPORT_BASE_DIR=./data/exchange`
+- `EMBEDDING_PROVIDER=hash-local` (local hash-based embedding, no model download)
+- `MEMORY_ALLOW_OUTBOUND_NETWORK=false`
+- `MEMORY_ENCRYPTION_ENABLED=false`
+- `MEMORY_MULTI_PROJECT_ENABLED=false`
+- `MCP_MEMORY_HOST=127.0.0.1` and `MCP_MEMORY_PORT=8767`
+
+## Usage
+
+### MCP Tools
 
 Discovery and administration:
 
@@ -90,27 +121,7 @@ Operational memory tools:
 - `memory.export`
 - `memory.import`
 
-## Local Run
-
-Quick setup:
-
-```bash
-pip install -e ".[dev]"
-copy .env.example .env
-pytest -q
-```
-
-Run as MCP stdio:
-
-```bash
-python -m src.mcp_server.server
-```
-
-Run local HTTP transport:
-
-```bash
-python -m src.mcp_server.http_server
-```
+### Fast-memory CLI
 
 Prepare a fast-memory distillation pack from the CLI:
 
@@ -130,7 +141,9 @@ Apply a distillation result from a local JSON file:
 llm-memory-fast-distill apply --input result.json
 ```
 
-Useful local endpoints:
+### HTTP Endpoints
+
+Local admin and health endpoints:
 
 - `GET /health`
 - `GET /admin/summary`
@@ -144,7 +157,7 @@ Useful local endpoints:
 - `POST /admin/fast-memory/distillation/prepare`
 - `POST /admin/fast-memory/distillation/apply`
 
-## Fast Memory Flow
+### Fast Memory Flow
 
 The intended fast-memory workflow is:
 
@@ -160,28 +173,27 @@ Enable it explicitly with:
 - `FAST_MEMORY_AGENT_DISTILLATION_ENABLED=true`
 - `FAST_MEMORY_AGENT_DISTILLATION_APPLY_ENABLED=true`
 
-## Runtime Characteristics
+## Security
 
-- default storage backend: SQLite
-- default vector backend: SQLite
-- default embedding path: local hash-based embedding, with optional external local embedding providers
-- optional multi-project mode with explicit project registration
-- optional encryption for sensitive payloads
-- outbound network blocked by default in the intended local-first setup
+Outbound network access is blocked by default, the HTTP transport binds to loopback by default, and import/export paths are confined to `MEMORY_IMPORT_EXPORT_BASE_DIR`. The HTTP server does not authenticate clients and must not be exposed to untrusted networks. See [SECURITY.md](SECURITY.md) for the threat model and how to report vulnerabilities.
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+ruff check src tests
+pytest -q
+pytest --cov=src --cov-report=term-missing --cov-report=xml -q
+```
+
+Coverage is enforced at 82% through `pyproject.toml`. See [CONTRIBUTING.md](CONTRIBUTING.md), [docs/QUALITY_GATE.md](docs/QUALITY_GATE.md), and [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 ## Project Status
 
-This repository is in active development, but the core runtime is already functional and covered by automated tests. The current direction is focused on hardening the local operational model rather than expanding into a cloud-first memory service.
+Active development. The core runtime is functional and covered by automated tests. The current direction is hardening the local operational model rather than expanding into a cloud-first memory service. See [CHANGELOG.md](CHANGELOG.md).
 
-## Documentation
+Built with AI-assisted workflows; architecture, tradeoffs, integration, review, and validation were directed by the author.
 
-- [QUICKSTART.md](QUICKSTART.md)
-- [DOCKER_GUIDE.md](DOCKER_GUIDE.md)
-- [CONTRIBUTING.md](CONTRIBUTING.md)
-- [CHANGELOG.md](CHANGELOG.md)
-- [docs/QUALITY_GATE.md](docs/QUALITY_GATE.md)
-- [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
+## License
 
-## Development Process
-
-Built with AI-assisted workflows, while architecture, tradeoffs, integration, review, and validation were directed by the author.
+MIT. See [LICENSE](LICENSE).

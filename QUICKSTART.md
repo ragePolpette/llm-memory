@@ -1,21 +1,23 @@
-# Guida Rapida - llm-memory v2
+# Quickstart
 
-## 1. Installazione
+## 1. Installation
 
 ```bash
-cd <project-root>\llm-memory
+cd <project-root>/llm-memory
 pip install -e ".[dev]"
 ```
 
-Il default e' `hash-local`, quindi non serve scaricare un modello esterno per iniziare.
+The default embedding provider is `hash-local`, so no external model download is needed to get started.
 
-## 2. Configurazione
+## 2. Configuration
 
 ```bash
-copy .env.example .env
+cp .env.example .env
 ```
 
-Default importanti:
+On Windows `cmd`, use `copy .env.example .env`.
+
+Important defaults:
 
 - `MEMORY_STORAGE_BACKEND=sqlite`
 - `MEMORY_VECTOR_BACKEND=sqlite`
@@ -23,7 +25,7 @@ Default importanti:
 - `MEMORY_IMPORT_EXPORT_BASE_DIR=./data/exchange`
 - `EMBEDDING_PROVIDER=hash-local`
 
-## 3. Avvio Runtime
+## 3. Running the Runtime
 
 ### MCP stdio
 
@@ -31,7 +33,7 @@ Default importanti:
 python -m src.mcp_server.server
 ```
 
-### MCP HTTP locale
+### Local MCP HTTP
 
 ```bash
 python -m src.mcp_server.http_server
@@ -43,7 +45,7 @@ Health check:
 curl http://127.0.0.1:8767/health
 ```
 
-Admin read-only locale:
+Local read-only admin endpoints:
 
 ```bash
 curl http://127.0.0.1:8767/admin/summary
@@ -57,15 +59,15 @@ curl "http://127.0.0.1:8767/admin/projects?limit=20"
 pytest -q
 ```
 
-Golden path verificato:
+Verified golden path:
 
 ```bash
 pytest tests/test_golden_path.py -q
 ```
 
-## 5. Tool MCP Principali
+## 5. Main MCP Tools
 
-Tool di discovery e amministrazione:
+Discovery and administration tools:
 
 - `memory.about`
 - `memory.list_projects`
@@ -73,7 +75,7 @@ Tool di discovery e amministrazione:
 - `memory.create_project`
 - `memory.scope_overview`
 
-Tool operativi:
+Operational tools:
 
 - `memory.add`
 - `memory.log_fast`
@@ -90,14 +92,14 @@ Tool operativi:
 - `memory.export`
 - `memory.import`
 
-## 6. Esempi Payload
+## 6. Example Payloads
 
 ### `memory.add`
 
 ```json
 {
   "agent_id": "local-agent",
-  "content": "Il runtime usa SQLite come persistenza locale.",
+  "content": "The runtime uses SQLite for local persistence.",
   "context": "architecture",
   "type": "fact",
   "tier": "tier-2",
@@ -110,7 +112,7 @@ Tool operativi:
 ```json
 {
   "agent_id": "local-agent",
-  "query": "persistenza locale sqlite",
+  "query": "local sqlite persistence",
   "limit": 5,
   "include_project": true,
   "include_workspace": true,
@@ -123,12 +125,12 @@ Tool operativi:
 ```json
 {
   "agent_id": "local-agent",
-  "content": "Bug: l'utente Y vede solo il menu X. Fix applicato aggiornando la tabella permessi.",
+  "content": "Bug: user Y only sees menu X. Fixed by updating the permissions table.",
   "kind": "fix",
   "product_area": "menu",
   "component": "permissions",
-  "action_taken": "Aggiornata la tabella permessi per riallineare le voci abilitate.",
-  "outcome": "Menu corretto dopo refresh sessione.",
+  "action_taken": "Updated the permissions table to realign the enabled entries.",
+  "outcome": "Menu correct after session refresh.",
   "generalizable": true
 }
 ```
@@ -196,46 +198,48 @@ Tool operativi:
 }
 ```
 
-## 7. Layout Dati
+## 7. Data Layout
 
-I dati principali vivono in:
+Main data lives in:
 
 - `./data/memory.db`
 - `./data/exchange/`
 
-Non c'e' piu un backend LanceDB o un filesystem markdown come runtime primario.
+The runtime uses SQLite only; there is no LanceDB backend and no markdown filesystem as the primary store.
 
 ## 8. Docker
 
-Per il runtime containerizzato usa la guida dedicata in `DOCKER_GUIDE.md`.
+For the containerized runtime see [DOCKER_GUIDE.md](DOCKER_GUIDE.md).
 
 ## 9. Development Workflow
 
-Per il workflow di sviluppo e contribution usa `CONTRIBUTING.md`.
+For the development and contribution workflow see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## 10. Distillazione Fast Memory
+## 10. Fast Memory Distillation
 
-La distillazione agentica e' protetta e disabilitata di default.
+Agent distillation is protected and disabled by default.
 
-Per abilitarla localmente:
+To enable it locally:
 
 ```bash
-set FAST_MEMORY_AGENT_DISTILLATION_ENABLED=true
-set FAST_MEMORY_AGENT_DISTILLATION_APPLY_ENABLED=true
+export FAST_MEMORY_AGENT_DISTILLATION_ENABLED=true
+export FAST_MEMORY_AGENT_DISTILLATION_APPLY_ENABLED=true
 ```
 
-Workflow minimo:
+On Windows `cmd`, use `set NAME=true` instead of `export`.
 
-1. scrivi note episodiche con `memory.log_fast`
-2. ordina i candidati con `memory.rank_fast_candidates`
-3. prepara il candidate pack con `memory.prepare_fast_distillation`
-4. lancia la CLI locale:
+Minimal workflow:
+
+1. write episodic notes with `memory.log_fast`
+2. rank candidates with `memory.rank_fast_candidates`
+3. prepare the candidate pack with `memory.prepare_fast_distillation`
+4. run the local CLI:
 
 ```bash
 llm-memory-fast-distill run --agent-id local-cli --reason "distill top candidate" --top-k 1 --harness codex
 ```
 
-5. applica l'output JSON risultante:
+5. apply the resulting JSON output:
 
 ```bash
 llm-memory-fast-distill apply --input result.json

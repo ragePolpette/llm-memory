@@ -1,6 +1,6 @@
 # Quality Gate
 
-This repository uses a local-first quality gate suitable for a serious portfolio project and small-team workflow.
+This repository uses a local-first quality gate suitable for a small-team workflow.
 
 ## Required Setup
 
