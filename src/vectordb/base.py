@@ -1,4 +1,4 @@
-"""Interfacce vector store locali."""
+"""Local vector store interfaces."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from ..models import MemoryEntry, ScopeRef
 
 
 class VectorStore(ABC):
-    """Interfaccia astratta per ricerca vettoriale locale."""
+    """Abstract interface for local vector search."""
 
     @abstractmethod
     def upsert(self, entry_id: str, version_id: str, vector: list[float], created_at: str) -> None:

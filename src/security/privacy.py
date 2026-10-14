@@ -1,4 +1,4 @@
-"""Policy privacy/redaction locale."""
+"""Local privacy/redaction policy."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 @dataclass
 class PrivacyDecision:
-    """Decisione applicata al contenuto prima della persistenza."""
+    """Decision applied to content before persistence."""
 
     content: str
     metadata: dict
@@ -16,7 +16,7 @@ class PrivacyDecision:
 
 
 class PrivacyPolicy:
-    """Applica policy su campi sensibili e metadati."""
+    """Apply the policy to sensitive fields and metadata."""
 
     def __init__(
         self,

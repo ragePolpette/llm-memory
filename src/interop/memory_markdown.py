@@ -1,4 +1,4 @@
-"""Parser/renderer deterministico per formato canonico memory.md."""
+"""Deterministic parser/renderer for the canonical memory.md format."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _normalize_dt(value: str | datetime | None) -> str:
 
 
 def render_memory_markdown(entries: list[MemoryEntry], purpose: str = "Local memory snapshot") -> str:
-    """Render deterministico memory.md da entries interne."""
+    """Deterministically render memory.md from internal entries."""
 
     grouped: dict[str, list[MemoryEntry]] = defaultdict(list)
     for entry in entries:
@@ -92,7 +92,7 @@ def render_memory_markdown(entries: list[MemoryEntry], purpose: str = "Local mem
 
 
 def parse_memory_markdown(markdown: str, base_scope: ScopeRef) -> list[MemoryEntry]:
-    """Parse memory.md in entries interne (deterministico)."""
+    """Deterministically parse memory.md into internal entries."""
 
     entries: list[MemoryEntry] = []
     current_section: str | None = None

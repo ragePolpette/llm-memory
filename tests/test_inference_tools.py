@@ -21,7 +21,7 @@ async def test_memory_about_exposes_harness_tool_map(runtime):
 
     assert "tool_map" in payload
     assert "capture_inference_memory" in payload["tool_map"]["harness"]
-    assert payload["harness_scope_guide"]["global"].startswith("Usa per conoscenza trasversale")
+    assert payload["harness_scope_guide"]["global"].startswith("Use for cross-cutting knowledge")
 
 
 @pytest.mark.asyncio

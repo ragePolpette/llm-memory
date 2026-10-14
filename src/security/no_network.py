@@ -1,4 +1,4 @@
-"""Blocco esplicito chiamate di rete outbound (local-first)."""
+"""Explicit blocking of outbound network calls (local-first)."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ from typing import Callable
 
 
 class NetworkBlockedError(RuntimeError):
-    """Errore lanciato quando una chiamata outbound è bloccata."""
+    """Raised when an outbound call is blocked."""
 
 
 @dataclass
 class NetworkGuardState:
-    """Stato patch socket per ripristino."""
+    """Socket patch state used for restoration."""
 
     original_socket_connect: Callable
     original_create_connection: Callable
@@ -35,7 +35,7 @@ def _is_allowed_host(host: object, allow_loopback: bool) -> bool:
 
 
 def block_outbound_network(allow_loopback: bool = True) -> None:
-    """Blocca connessioni outbound via socket.connect/create_connection."""
+    """Block outbound connections via socket.connect/create_connection."""
 
     global _GUARD_STATE
     if _GUARD_STATE is not None:
@@ -90,7 +90,7 @@ def block_outbound_network(allow_loopback: bool = True) -> None:
 
 
 def restore_network() -> None:
-    """Ripristina comportamento socket originale."""
+    """Restore the original socket behavior."""
 
     global _GUARD_STATE
     if _GUARD_STATE is None:

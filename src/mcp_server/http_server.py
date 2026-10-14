@@ -1,35 +1,133 @@
-"""HTTP server MCP per LLM Memory v2 (streamable + SSE legacy)."""
+"""MCP HTTP server for LLM Memory v2 (streamable HTTP + legacy SSE)."""
 
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import json
-import logging
 from contextlib import asynccontextmanager
 from typing import Any, TypedDict
 
+import structlog
 import uvicorn
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
-from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
-from starlette.types import Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.bootstrap import build_runtime
-from src.config import get_config
+from src.config import Config, get_config
+from src.logging_setup import configure_logging
+from src.mcp_server.mcp_transport import LegacySseTransport, StreamableTransport
 from src.mcp_server.tools import register_tools
 from src.service.memory_service import ActorContext
 
-logger = logging.getLogger(__name__)
+configure_logging()
+logger = structlog.get_logger()
+
+API_TOKEN_ENV = "LLM_MEMORY_API_TOKEN"
+PROTECTED_MCP_PREFIXES = ("/mcp", "/sse", "/messages")
+ADMIN_PREFIX = "/admin"
 
 runtime = None
 mcp_server: Server | None = None
-sse_transport: SseServerTransport | None = None
-streamable_session_manager: StreamableHTTPSessionManager | None = None
+sse_transport: LegacySseTransport | None = None
+streamable_session_manager: StreamableTransport | None = None
 app_config = None
+
+
+class InsecureBindError(RuntimeError):
+    """Raised when the HTTP transport would be exposed without authentication."""
+
+
+def is_loopback_host(host: str) -> bool:
+    normalized = str(host).strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_bind(config: Config) -> None:
+    if is_loopback_host(config.mcp_host) or config.api_token:
+        return
+    raise InsecureBindError(
+        f"Refusing to bind the HTTP transport to non-loopback host '{config.mcp_host}' "
+        f"without authentication. Set {API_TOKEN_ENV} to a strong random token, or bind "
+        "MCP_MEMORY_HOST to 127.0.0.1."
+    )
+
+
+def _bearer_token(scope: Scope) -> str | None:
+    for name, value in scope.get("headers") or []:
+        if name.lower() == b"authorization":
+            scheme, _, token = value.decode("latin-1").partition(" ")
+            if scheme.lower() == "bearer" and token.strip():
+                return token.strip()
+            return None
+    return None
+
+
+def is_authorized(scope: Scope, config: Config | None) -> bool:
+    expected = getattr(config, "api_token", None)
+    if not expected:
+        return False
+    provided = _bearer_token(scope)
+    if provided is None:
+        return False
+    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _path_matches(path: str, prefix: str) -> bool:
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def _auth_error(status_code: int, error_type: str, message: str) -> JSONResponse:
+    headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else None
+    return JSONResponse(
+        {"status": "error", "error": {"type": error_type, "message": message}},
+        status_code=status_code,
+        headers=headers,
+    )
+
+
+class BearerAuthMiddleware:
+    """Bearer token gate: optional for MCP endpoints, mandatory for /admin."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = str(scope.get("path") or "")
+        response: Response | None = None
+        if _path_matches(path, ADMIN_PREFIX):
+            if app_config is None:
+                response = Response("Server not initialized", status_code=503)
+            elif not app_config.api_token:
+                response = _auth_error(
+                    403,
+                    "forbidden",
+                    f"Admin endpoints are disabled until {API_TOKEN_ENV} is configured.",
+                )
+            elif not is_authorized(scope, app_config):
+                response = _auth_error(401, "unauthorized", "Missing or invalid bearer token.")
+        elif any(_path_matches(path, prefix) for prefix in PROTECTED_MCP_PREFIXES):
+            if app_config is not None and app_config.api_token and not is_authorized(scope, app_config):
+                response = _auth_error(401, "unauthorized", "Missing or invalid bearer token.")
+
+        if response is not None:
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 class ValidationError(TypedDict):
@@ -325,6 +423,7 @@ def init_components() -> None:
     global runtime, mcp_server, sse_transport, streamable_session_manager, app_config
 
     config = get_config()
+    validate_bind(config)
     app_config = config
     runtime = build_runtime(config)
 
@@ -343,16 +442,12 @@ def init_components() -> None:
     async def _list_prompts():
         return []
 
-    sse_transport = SseServerTransport("/messages/")
-    streamable_session_manager = StreamableHTTPSessionManager(
-        app=mcp_server,
+    sse_transport = LegacySseTransport(mcp_server, messages_endpoint="/messages/")
+    streamable_session_manager = StreamableTransport(
+        mcp_server,
         json_response=not config.mcp_sse_enabled,
-        stateless=False,
-        security_settings=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=config.mcp_allowed_hosts,
-            allowed_origins=config.mcp_allowed_origins,
-        ),
+        allowed_hosts=config.mcp_allowed_hosts,
+        allowed_origins=config.mcp_allowed_origins,
     )
     logger.info("LLM Memory HTTP runtime initialized", **config.startup_diagnostics())
 
@@ -426,23 +521,18 @@ class LegacyMessagesASGIApp:
         await sse_transport.handle_post_message(scope, receive, send)
 
 
+class LegacySseASGIApp:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if sse_transport is None:
+            response = Response("Server not initialized", status_code=503)
+            await response(scope, receive, send)
+            return
+        await sse_transport.handle_sse(scope, receive, send)
+
+
 streamable_http_app = StreamableHTTPASGIApp()
 legacy_messages_app = LegacyMessagesASGIApp()
-
-
-async def sse_legacy_endpoint(request: Request):
-    if sse_transport is None or mcp_server is None:
-        return Response("Server not initialized", status_code=503)
-
-    async with sse_transport.connect_sse(request.scope, request.receive, request._send) as streams:
-        read_stream, write_stream = streams
-        await mcp_server.run(
-            read_stream,
-            write_stream,
-            mcp_server.create_initialization_options(),
-        )
-
-    return Response()
+sse_legacy_endpoint = LegacySseASGIApp()
 
 
 async def legacy_sse_method_not_allowed(request: Request):
@@ -454,13 +544,16 @@ async def legacy_sse_method_not_allowed(request: Request):
 
 
 async def health(request: Request):
+    expose_diagnostics = app_config is not None and (
+        not app_config.api_token or is_authorized(request.scope, app_config)
+    )
     return JSONResponse(
         {
             "status": "ok",
             "server": "llm-memory",
             "api": "v2",
             "mcp_sse_enabled": bool(getattr(app_config, "mcp_sse_enabled", False)),
-            "diagnostics": app_config.startup_diagnostics() if app_config is not None else None,
+            "diagnostics": app_config.startup_diagnostics() if expose_diagnostics else None,
         }
     )
 
@@ -741,9 +834,17 @@ routes = [
     Route("/sse", endpoint=legacy_sse_method_not_allowed, methods=["POST", "DELETE"]),
 ]
 
-app = Starlette(routes=routes, lifespan=lifespan)
+app = Starlette(routes=routes, lifespan=lifespan, middleware=[Middleware(BearerAuthMiddleware)])
+
+
+def main() -> None:
+    run_config = get_config()
+    try:
+        validate_bind(run_config)
+    except InsecureBindError as exc:
+        raise SystemExit(f"error: {exc}") from exc
+    uvicorn.run(app, host=run_config.mcp_host, port=run_config.mcp_port, log_level="info")
 
 
 if __name__ == "__main__":
-    run_config = get_config()
-    uvicorn.run(app, host=run_config.mcp_host, port=run_config.mcp_port, log_level="info")
+    main()

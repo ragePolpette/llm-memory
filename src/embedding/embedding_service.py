@@ -1,4 +1,4 @@
-"""Embedding layer swappabile, completamente locale."""
+"""Swappable, fully local embedding layer."""
 
 from __future__ import annotations
 
@@ -12,34 +12,34 @@ from ..config import Config, EmbeddingProviderKind
 
 
 class EmbeddingProvider(ABC):
-    """Interfaccia astratta provider embedding locale."""
+    """Abstract local embedding provider interface."""
 
     async def prepare(self) -> None:
-        """Prepara il provider prima di servire richieste."""
+        """Prepare the provider before serving requests."""
 
     @abstractmethod
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Genera embedding per una lista di testi."""
+        """Embed a list of texts."""
 
     @abstractmethod
     def dimension(self) -> int:
-        """Ritorna la dimensione vettoriale."""
+        """Return the vector dimension."""
 
     @abstractmethod
     def provider_id(self) -> str:
-        """Identificatore provider."""
+        """Provider identifier."""
 
     @abstractmethod
     def model_id(self) -> str:
-        """Identificatore modello embedding."""
+        """Embedding model identifier."""
 
     @abstractmethod
     def fingerprint(self) -> str:
-        """Fingerprint deterministico di configurazione+modello."""
+        """Deterministic fingerprint of configuration and model."""
 
 
 class HashEmbeddingProvider(EmbeddingProvider):
-    """Embedding deterministico hash-based (offline hard-safe)."""
+    """Deterministic hash-based embedding (strictly offline)."""
 
     def __init__(self, model_name: str = "local-hash-v1", dim: int = 384):
         self._model_name = model_name
@@ -52,7 +52,6 @@ class HashEmbeddingProvider(EmbeddingProvider):
         return vectors
 
     def _embed_one(self, text: str) -> list[float]:
-        # Feature hashing su token con segno stabile.
         vector = [0.0] * self._dim
         tokens = [tok for tok in text.lower().split() if tok]
         if not tokens:
@@ -64,7 +63,6 @@ class HashEmbeddingProvider(EmbeddingProvider):
             sign = 1.0 if (digest[4] % 2 == 0) else -1.0
             vector[idx] += sign
 
-        # Normalizzazione L2.
         norm = sum(v * v for v in vector) ** 0.5
         if norm > 0:
             vector = [v / norm for v in vector]
@@ -85,7 +83,7 @@ class HashEmbeddingProvider(EmbeddingProvider):
 
 
 class SentenceTransformerProvider(EmbeddingProvider):
-    """Provider `sentence-transformers` in modalità offline/local-only."""
+    """`sentence-transformers` provider in offline, local-only mode."""
 
     def __init__(
         self,
@@ -116,12 +114,12 @@ class SentenceTransformerProvider(EmbeddingProvider):
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError(
-                "sentence-transformers non installato. Usa EMBEDDING_PROVIDER=hash-local "
-                "oppure installa la dipendenza localmente."
+                "sentence-transformers is not installed. Use EMBEDDING_PROVIDER=hash-local "
+                "or install the dependency locally."
             ) from exc
 
         kwargs = {"trust_remote_code": False}
-        # `local_files_only` è fondamentale per evitare download accidentalmente.
+        # local_files_only prevents any accidental model download.
         kwargs["local_files_only"] = True
 
         if self.device:
@@ -171,15 +169,17 @@ class SentenceTransformerProvider(EmbeddingProvider):
         return self.model_name
 
     def fingerprint(self) -> str:
+        # The dimension is excluded on purpose: it is only known after the model
+        # loads, and including it made the version id change between calls.
         raw = (
-            f"{self.provider_id()}::{self.model_name}::{self._dimension}::"
+            f"{self.provider_id()}::{self.model_name}::"
             f"{self.device or 'auto'}::{self.batch_size}::{self.normalize}"
         )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def get_embedding_provider(config: Config) -> EmbeddingProvider:
-    """Factory provider embedding locale swappabile."""
+    """Build the configured local embedding provider."""
 
     if config.embedding_provider == EmbeddingProviderKind.SENTENCE_TRANSFORMERS:
         return SentenceTransformerProvider(

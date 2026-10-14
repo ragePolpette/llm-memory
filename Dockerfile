@@ -16,9 +16,12 @@ COPY src/ ./src/
 COPY scripts/ ./scripts/
 
 RUN pip install --upgrade pip && \
-    pip install -e .
+    pip install -e ".[crypto]"
 
-RUN mkdir -p /data/exchange
+RUN groupadd --system --gid 10001 app && \
+    useradd --system --uid 10001 --gid app --home-dir /app --shell /usr/sbin/nologin app && \
+    mkdir -p /data/exchange /app/.local/models && \
+    chown -R app:app /data /app
 
 ENV MEMORY_STORAGE_BACKEND=sqlite \
     MEMORY_VECTOR_BACKEND=sqlite \
@@ -31,6 +34,8 @@ ENV MEMORY_STORAGE_BACKEND=sqlite \
     MCP_MEMORY_HOST=0.0.0.0 \
     MCP_MEMORY_PORT=8767 \
     MCP_MEMORY_SSE_ENABLED=false
+
+USER app
 
 VOLUME ["/data"]
 

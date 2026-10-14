@@ -24,7 +24,7 @@ class _FailingEmbeddingProvider(EmbeddingProvider):
 
 
 @pytest.mark.asyncio
-async def test_add_degrades_when_embedding_fails(service):
+async def test_add_rejects_when_embedding_fails(service):
     actor = ActorContext(agent_id="agent-nov-embed", user_id="user-nov-embed", workspace_id="ws-test", project_id="prj-test")
     service.embedding_provider = _FailingEmbeddingProvider()
 
@@ -38,20 +38,22 @@ async def test_add_degrades_when_embedding_fails(service):
         actor,
     )
 
-    assert result["success"] is True
-    assert result["novelty_computed"] is False
-    assert result["novelty_score"] is None
-
-    entry = service.get(result["entry_id"], actor)
-    assert entry is not None
-    assert entry.metadata["novelty_status"] == "failed"
-    assert entry.metadata["novelty_score"] is None
+    assert result["success"] is False
+    assert result["rejected"] is True
+    assert result["reason"] == "embedding-failed"
+    assert result["decision"]["reason_codes"] == ["EMBEDDING_UNAVAILABLE"]
+    assert "entry_id" not in result
+    assert service.list_entries(actor, limit=10) == []
 
     audits = service.store.list_audit(limit=20)
     assert any(
         audit.action == "novelty_computation_failed"
         and audit.payload["error_type"] == "RuntimeError"
         and audit.payload["embedding_status"] == "failed"
+        for audit in audits
+    )
+    assert any(
+        audit.action == "write_attempt" and audit.payload["outcome"] == "embedding_failed"
         for audit in audits
     )
 

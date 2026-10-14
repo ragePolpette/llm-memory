@@ -1,4 +1,4 @@
-"""Interfacce storage per backend swappabili."""
+"""Storage interfaces for swappable backends."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from ..models import (
 
 
 class MetadataStore(ABC):
-    """Interfaccia astratta metadata store."""
+    """Abstract metadata store interface."""
 
     @abstractmethod
     def add_entry(self, entry: MemoryEntry) -> None:

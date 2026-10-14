@@ -1,4 +1,4 @@
-"""CLI locale per la distillazione agentica della fast memory."""
+"""Local CLI for agentic fast-memory distillation."""
 
 from __future__ import annotations
 
@@ -176,7 +176,7 @@ def _add_actor_arguments(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llm-memory-fast-distill",
-        description="Prepara o lancia la distillazione agentica della fast memory.",
+        description="Prepare or run agentic fast-memory distillation.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -189,14 +189,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--harness-bin")
     run_parser.add_argument("--harness-arg", action="append", default=[])
 
-    apply_parser = subparsers.add_parser("apply", help="Applica un output JSON di distillazione agentica.")
+    apply_parser = subparsers.add_parser("apply", help="Apply a JSON agentic distillation output.")
     _add_actor_arguments(apply_parser)
-    apply_parser.add_argument("--run-id", help="Run id della prepare da collegare all'apply.")
-    apply_parser.add_argument("--input", required=True, help="Path al file JSON con il contract decisions[].")
+    apply_parser.add_argument("--run-id", help="Prepare run id to link to this apply.")
+    apply_parser.add_argument("--input", required=True, help="Path to the JSON file with the decisions[] contract.")
     apply_parser.add_argument(
         "--apply",
         action="store_true",
-        help="Applica davvero le decisioni. Se omesso resta in dry-run.",
+        help="Actually apply the decisions. Dry-run when omitted.",
     )
 
     return parser

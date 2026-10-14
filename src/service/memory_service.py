@@ -1,7 +1,8 @@
-"""Servizio applicativo memoria Tier-1/2/3 con governance e audit."""
+"""Tier-1/2/3 memory application service with governance and audit."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -9,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+import structlog
 
 from ..config import Config, MemoryScope, ScopeLevel, Tier
 from ..embedding.embedding_service import EmbeddingProvider, get_reembed_provider
@@ -49,10 +52,12 @@ from .persistence_policy import (
     classify_persistence,
 )
 
+logger = structlog.get_logger()
+
 
 @dataclass
 class ActorContext:
-    """Identità chiamante per policy least-privilege."""
+    """Caller identity for least-privilege policy checks."""
 
     agent_id: str
     user_id: Optional[str]
@@ -60,6 +65,14 @@ class ActorContext:
     project_id: str
     writer_model: Optional[str] = None
     writer_model_source: Optional[str] = None
+
+
+class EmbeddingUnavailableError(RuntimeError):
+    """The embedding provider could not produce a usable vector."""
+
+
+class EmbeddingVersionMismatchError(RuntimeError):
+    """The active embedding version does not match the configured provider."""
 
 
 class MemoryInputError(ValueError):
@@ -106,7 +119,7 @@ def utc_now_iso() -> str:
 
 
 class MemoryService:
-    """Servizio principale memoria persistente locale."""
+    """Main local persistent memory service."""
 
     _JSONL_IMPORT_ALLOWED_FIELDS = frozenset(MemoryEntry.model_fields.keys())
     _PROJECT_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]{1,63}$"
@@ -1777,6 +1790,16 @@ class MemoryService:
             return compact[:limit]
         return value
 
+    @staticmethod
+    def _text_fingerprint(value: Any) -> Optional[dict[str, Any]]:
+        if value is None:
+            return None
+        text = str(value)
+        return {
+            "sha256_12": hashlib.sha256(text.encode("utf-8")).hexdigest()[:12],
+            "chars": len(text),
+        }
+
     def _log_activity(self, event: str, payload: dict[str, Any]) -> None:
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1856,6 +1879,7 @@ class MemoryService:
         record_type: str,
         internal_reason: str,
         entry: MemoryEntry,
+        embedding: Optional[tuple[str, list[float], str]] = None,
     ) -> PersistenceDecision:
         decision = classify_internal_write(
             record_type=record_type,
@@ -1887,7 +1911,16 @@ class MemoryService:
         entry.metadata = metadata
         entry.source = "internal_governance"
 
-        self.store.add_entry(entry)
+        if embedding is None:
+            self.store.add_entry(entry)
+        else:
+            version_id, vector, created_at = embedding
+            self.store.add_entry_with_embedding(
+                entry,
+                version_id=version_id,
+                vector=vector,
+                created_at=created_at,
+            )
         self._audit_write_attempt(
             actor=actor,
             write_path=write_path,
@@ -1945,6 +1978,34 @@ class MemoryService:
             agent_id=agent_id,
         )
 
+    def _provider_version_id(self) -> str:
+        return (
+            f"{self.embedding_provider.provider_id()}::"
+            f"{self.embedding_provider.model_id()}::"
+            f"{self.embedding_provider.fingerprint()[:16]}"
+        )
+
+    def embedding_version_drift(self) -> Optional[dict[str, str]]:
+        active = self.store.get_active_embedding_version()
+        current_version_id = self._provider_version_id()
+        if active is None or active.version_id == current_version_id:
+            return None
+        return {"active_version_id": active.version_id, "provider_version_id": current_version_id}
+
+    def embedding_drift_message(self, drift: dict[str, str]) -> str:
+        return (
+            f"Active embedding version '{drift['active_version_id']}' does not match the configured "
+            f"provider version '{drift['provider_version_id']}'. Semantic search is disabled until "
+            "existing entries are re-embedded: run the memory.reembed tool without model_id/dim "
+            "to re-embed with the configured provider and activate it."
+        )
+
+    def check_embedding_version(self) -> Optional[dict[str, str]]:
+        drift = self.embedding_version_drift()
+        if drift is not None:
+            logger.warning("embedding_version_mismatch", message=self.embedding_drift_message(drift), **drift)
+        return drift
+
     def _current_embedding_version(self) -> EmbeddingVersion:
         fingerprint = self.embedding_provider.fingerprint()
         version_id = (
@@ -1967,7 +2028,10 @@ class MemoryService:
             active=True,
         )
 
-        self.store.upsert_embedding_version(version, activate=True)
+        active = self.store.get_active_embedding_version()
+        activate = active is None or active.version_id == version_id
+        version.active = activate
+        self.store.upsert_embedding_version(version, activate=activate)
         return version
 
     def _scope_from_payload(self, payload: dict, actor: ActorContext) -> ScopeRef:
@@ -2165,6 +2229,52 @@ class MemoryService:
                 ],
             )
 
+    def _reject_unembeddable_write(
+        self,
+        *,
+        actor: ActorContext,
+        write_path: str,
+        decision: PersistenceDecision,
+        scope: ScopeRef,
+        embedding_status: str,
+    ) -> dict:
+        rejected_decision = PersistenceDecision(
+            accepted=False,
+            category=decision.category,
+            reason_codes=["EMBEDDING_UNAVAILABLE"],
+            confidence=1.0,
+            normalized_summary=decision.normalized_summary,
+            source_type=decision.source_type,
+        )
+        self._audit_write_attempt(
+            actor=actor,
+            write_path=write_path,
+            decision=rejected_decision,
+            scope=scope,
+            outcome="embedding_failed",
+        )
+        result = {
+            "success": False,
+            "rejected": True,
+            "reason": "embedding-failed",
+            "message": (
+                "The embedding provider could not produce a vector, so the entry was not stored. "
+                f"Embedding status: {embedding_status}."
+            ),
+            "decision": self._decision_payload(rejected_decision, write_path=write_path),
+        }
+        self._log_activity(
+            "write_out",
+            {
+                "operation": write_path,
+                "agent_id": actor.agent_id,
+                "success": False,
+                "rejected": True,
+                "reason": result["reason"],
+            },
+        )
+        return result
+
     async def add(self, payload: dict, actor: ActorContext, *, write_path: str = "add") -> dict:
         scope = self._scope_from_payload(payload, actor)
         self._log_activity(
@@ -2174,7 +2284,7 @@ class MemoryService:
                 "agent_id": actor.agent_id,
                 "workspace_id": scope.workspace_id,
                 "project_id": scope.project_id,
-                "content": self._preview_text(payload.get("content")),
+                "content": self._text_fingerprint(payload.get("content")),
                 "type": payload.get("type", "fact"),
                 "tier": payload.get("tier", "tier-1"),
                 "visibility": payload.get("visibility", payload.get("scope_visibility", "shared")),
@@ -2319,6 +2429,15 @@ class MemoryService:
             )
             top_similarities = []
 
+        if query_vec is None:
+            return self._reject_unembeddable_write(
+                actor=actor,
+                write_path=write_path,
+                decision=decision,
+                scope=scope,
+                embedding_status=embedding_status,
+            )
+
         now_iso = utc_now_iso()
         metadata = build_importance_metadata(
             payload=payload,
@@ -2347,7 +2466,7 @@ class MemoryService:
             stored_content = cipher_result.payload
             encrypted = cipher_result.encrypted
 
-        if self.config.dedup_semantic_enabled and query_vec is not None:
+        if self.config.dedup_semantic_enabled:
             try:
                 semantic_matches = self.vector_store.similarity_search(
                     probe_vector=query_vec,
@@ -2445,14 +2564,12 @@ class MemoryService:
             redacted=privacy.redacted,
         )
 
-        self.store.add_entry(entry)
-        if query_vec is not None:
-            self.vector_store.upsert(
-                entry_id=entry.id,
-                version_id=version.version_id,
-                vector=query_vec,
-                created_at=now_iso,
-            )
+        self.store.add_entry_with_embedding(
+            entry,
+            version_id=version.version_id,
+            vector=query_vec,
+            created_at=now_iso,
+        )
 
         self._audit_write_attempt(
             actor=actor,
@@ -2506,7 +2623,7 @@ class MemoryService:
                 "workspace_id": scope.workspace_id,
                 "project_id": scope.project_id,
                 "event_type": payload.get("event_type", "note"),
-                "content": self._preview_text(payload.get("content")),
+                "content": self._text_fingerprint(payload.get("content")),
             },
         )
 
@@ -2860,13 +2977,15 @@ class MemoryService:
             updated_at=now_iso,
         )
         version = self._current_embedding_version()
-        query_vec: Optional[list[float]] = None
         try:
             query_vec = (await self.embedding_provider.embed([promoted_content]))[0]
-            if self._has_usable_embedding(query_vec):
-                promoted_entry.embedding_version_id = version.version_id
-        except Exception:
-            query_vec = None
+        except Exception as exc:
+            raise EmbeddingUnavailableError(
+                f"Promotion aborted: the embedding provider failed ({type(exc).__name__})."
+            ) from exc
+        if not self._has_usable_embedding(query_vec):
+            raise EmbeddingUnavailableError("Promotion aborted: the embedding provider returned an empty vector.")
+        promoted_entry.embedding_version_id = version.version_id
 
         self._persist_internal_entry(
             actor=actor,
@@ -2874,14 +2993,8 @@ class MemoryService:
             record_type="fast_promotion",
             internal_reason=normalized_reason,
             entry=promoted_entry,
+            embedding=(version.version_id, query_vec, now_iso),
         )
-        if query_vec is not None and self._has_usable_embedding(query_vec):
-            self.vector_store.upsert(
-                entry_id=promoted_entry.id,
-                version_id=version.version_id,
-                vector=query_vec,
-                created_at=now_iso,
-            )
 
         promoted_entry_id = promoted_entry.id
         entry.metadata = self._merge_fast_distillation_metadata(
@@ -2976,7 +3089,7 @@ class MemoryService:
                 "agent_id": actor.agent_id,
                 "workspace_id": actor.workspace_id,
                 "project_id": actor.project_id,
-                "query": self._preview_text(query),
+                "query": self._text_fingerprint(query),
                 "limit": limit,
                 "include_invalidated": include_invalidated,
                 "tier": tier,
@@ -2988,7 +3101,10 @@ class MemoryService:
             include_workspace=include_workspace,
             include_global=include_global,
         )
-        version = self.store.get_active_embedding_version() or self._current_embedding_version()
+        drift = self.embedding_version_drift()
+        if drift is not None:
+            raise EmbeddingVersionMismatchError(self.embedding_drift_message(drift))
+        version = self._current_embedding_version()
         query_vector = (await self.embedding_provider.embed([query]))[0]
 
         candidates = self.vector_store.search(
@@ -3088,7 +3204,7 @@ class MemoryService:
                 "operation": "invalidate",
                 "agent_id": actor.agent_id,
                 "target_ids": target_ids,
-                "reason": self._preview_text(reason),
+                "reason": self._text_fingerprint(reason),
                 "source": source,
             },
         )
@@ -3179,9 +3295,9 @@ class MemoryService:
                 "agent_id": actor.agent_id,
                 "entry_ids": entry_ids,
                 "target_tier": target_tier.value,
-                "reason": self._preview_text(reason),
+                "reason": self._text_fingerprint(reason),
                 "merge": merge,
-                "summary": self._preview_text(summary),
+                "summary": self._text_fingerprint(summary),
             },
         )
         promoted: list[str] = []
@@ -3372,6 +3488,16 @@ class MemoryService:
                 processed += 1
 
         remaining = self.store.count_entries_missing_embedding(version_id=version_id)
+        if activate and reembed_provider is not self.embedding_provider:
+            self.embedding_provider = reembed_provider
+            logger.warning(
+                "embedding_provider_switched",
+                version_id=version_id,
+                message=(
+                    "The runtime now embeds with the re-embedded provider. Update EMBEDDING_MODEL / "
+                    "EMBEDDING_DIM to match, otherwise semantic search is refused after a restart."
+                ),
+            )
         self.store.add_audit(
             AuditEvent(
                 action="reembed",
@@ -3403,29 +3529,32 @@ class MemoryService:
         fmt = fmt.lower()
         resolved_path = self._resolve_exchange_path(path, must_exist=False)
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
-        entries = self.store.export_entries(
-            scope=ScopeRef(
-                workspace_id=actor.workspace_id,
-                project_id=actor.project_id,
-                scope_level=ScopeLevel.PROJECT,
+        entries = [
+            entry
+            for entry in self.store.export_entries(
+                scope=ScopeRef(
+                    workspace_id=actor.workspace_id,
+                    project_id=actor.project_id,
+                    scope_level=ScopeLevel.PROJECT,
+                )
             )
-        )
+            if self._can_read(actor, entry)
+        ]
+        count = len(entries)
 
         if fmt == "jsonl":
             with resolved_path.open("w", encoding="utf-8") as f:
                 for entry in entries:
                     f.write(json.dumps(entry.model_dump(mode="json"), ensure_ascii=True, sort_keys=True))
                     f.write("\n")
-            count = len(entries)
 
         elif fmt == "memory.md":
             markdown = render_memory_markdown(entries)
             resolved_path.write_text(markdown, encoding="utf-8")
-            count = len(entries)
 
         elif fmt == "sqlite":
-            self.store.backup_to(resolved_path)
-            count = len(entries)
+            project = self.store.get_project(actor.workspace_id, actor.project_id)
+            self.store.export_subset_to(resolved_path, entries, projects=[project] if project else [])
 
         else:
             raise ValueError(f"Unsupported export format: {fmt}")

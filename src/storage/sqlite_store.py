@@ -1,9 +1,11 @@
-"""Storage metadata locale basato su SQLite."""
+"""Local SQLite-based metadata storage."""
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Optional
@@ -26,7 +28,9 @@ from ..models import (
 
 
 class SQLiteMemoryStore:
-    """Store persistente locale per metadata, links, audit e embeddings."""
+    """Local persistent store for metadata, links, audit and embeddings."""
+
+    BUSY_TIMEOUT_SECONDS = 30.0
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
@@ -35,32 +39,96 @@ class SQLiteMemoryStore:
 
     @contextmanager
     def _conn(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=self.BUSY_TIMEOUT_SECONDS)
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute(f"PRAGMA busy_timeout={int(self.BUSY_TIMEOUT_SECONDS * 1000)}")
+            conn.execute("PRAGMA foreign_keys=ON")
             yield conn
             conn.commit()
         finally:
             conn.close()
 
-    def backup_to(self, target_path: Path) -> None:
-        target = Path(target_path)
-        if target.exists():
-            target.unlink()
+    def export_subset_to(
+        self,
+        target_path: Path,
+        entries: list[MemoryEntry],
+        projects: Iterable[ProjectRecord] = (),
+    ) -> None:
+        """Write a standalone SQLite database containing only the given entries.
 
-        source_conn = sqlite3.connect(self.db_path)
-        target_conn = sqlite3.connect(target)
+        The file is built next to the target and moved into place atomically, so a
+        failed export never leaves a partially written database behind.
+        """
+
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        tmp_path.unlink()
         try:
-            source_conn.backup(target_conn)
-            target_conn.commit()
+            subset = SQLiteMemoryStore(tmp_path)
+            entry_ids = [entry.id for entry in entries]
+            with self._conn() as source:
+                version_rows = source.execute("SELECT * FROM embedding_versions").fetchall()
+                embedding_rows = []
+                for start in range(0, len(entry_ids), 500):
+                    chunk = entry_ids[start : start + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    embedding_rows.extend(
+                        source.execute(
+                            f"SELECT * FROM embeddings WHERE entry_id IN ({placeholders})",
+                            chunk,
+                        ).fetchall()
+                    )
+            with subset._conn() as conn:
+                for project in projects:
+                    subset._upsert_project_row(conn, project)
+                for entry in entries:
+                    subset._insert_entry(conn, entry)
+                used_versions = {row["version_id"] for row in embedding_rows}
+                used_versions.update(e.embedding_version_id for e in entries if e.embedding_version_id)
+                for row in version_rows:
+                    if row["version_id"] not in used_versions:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO embedding_versions (
+                            version_id, provider_id, embedding_model_id, dim, fingerprint,
+                            config_json, created_at, active
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            row["version_id"],
+                            row["provider_id"],
+                            row["embedding_model_id"],
+                            row["dim"],
+                            row["fingerprint"],
+                            row["config_json"],
+                            row["created_at"],
+                            row["active"],
+                        ),
+                    )
+                for row in embedding_rows:
+                    conn.execute(
+                        """
+                        INSERT INTO embeddings (entry_id, version_id, vector_json, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (row["entry_id"], row["version_id"], row["vector_json"], row["created_at"]),
+                    )
+            with subset._conn() as conn:
+                conn.execute("PRAGMA journal_mode=DELETE")
+            os.replace(tmp_path, target)
         finally:
-            target_conn.close()
-            source_conn.close()
+            for leftover in (tmp_path, Path(f"{tmp_path}-wal"), Path(f"{tmp_path}-shm")):
+                if leftover.exists():
+                    leftover.unlink()
 
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA foreign_keys=ON")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS entries (
@@ -238,28 +306,31 @@ class SQLiteMemoryStore:
 
     def upsert_project(self, project: ProjectRecord) -> None:
         with self._conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO projects (
-                    workspace_id, project_id, display_name, description,
-                    metadata_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(workspace_id, project_id) DO UPDATE SET
-                    display_name=excluded.display_name,
-                    description=excluded.description,
-                    metadata_json=excluded.metadata_json,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    project.workspace_id,
-                    project.project_id,
-                    project.display_name,
-                    project.description,
-                    json.dumps(project.metadata, ensure_ascii=True, sort_keys=True),
-                    self._to_iso(project.created_at),
-                    self._to_iso(project.updated_at),
-                ),
-            )
+            self._upsert_project_row(conn, project)
+
+    def _upsert_project_row(self, conn: sqlite3.Connection, project: ProjectRecord) -> None:
+        conn.execute(
+            """
+            INSERT INTO projects (
+                workspace_id, project_id, display_name, description,
+                metadata_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(workspace_id, project_id) DO UPDATE SET
+                display_name=excluded.display_name,
+                description=excluded.description,
+                metadata_json=excluded.metadata_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                project.workspace_id,
+                project.project_id,
+                project.display_name,
+                project.description,
+                json.dumps(project.metadata, ensure_ascii=True, sort_keys=True),
+                self._to_iso(project.created_at),
+                self._to_iso(project.updated_at),
+            ),
+        )
 
     def get_project(self, workspace_id: str, project_id: str) -> Optional[ProjectRecord]:
         with self._conn() as conn:
@@ -293,42 +364,59 @@ class SQLiteMemoryStore:
 
     def add_entry(self, entry: MemoryEntry) -> None:
         with self._conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO entries (
-                    id, tier, workspace_id, project_id, scope_level, user_id, agent_id, visibility, source,
-                    type, status, content, context, tags_json, sensitivity_tags_json,
-                    metadata_json, confidence, content_hash, created_at, updated_at,
-                    embedding_version_id, encrypted, redacted
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    entry.id,
-                    entry.tier.value,
-                    entry.scope.workspace_id,
-                    entry.scope.project_id,
-                    entry.scope.scope_level.value,
-                    entry.scope.user_id,
-                    entry.scope.agent_id,
-                    entry.visibility.value,
-                    entry.source,
-                    entry.type.value,
-                    entry.status.value,
-                    entry.content,
-                    entry.context,
-                    json.dumps(entry.tags, ensure_ascii=True),
-                    json.dumps(entry.sensitivity_tags, ensure_ascii=True),
-                    json.dumps(entry.metadata, ensure_ascii=True, sort_keys=True),
-                    float(entry.confidence),
-                    entry.content_hash,
-                    self._to_iso(entry.created_at),
-                    self._to_iso(entry.updated_at),
-                    entry.embedding_version_id,
-                    int(entry.encrypted),
-                    int(entry.redacted),
-                ),
-            )
-            self._replace_links(conn, entry.id, entry.links)
+            self._insert_entry(conn, entry)
+
+    def add_entry_with_embedding(
+        self,
+        entry: MemoryEntry,
+        *,
+        version_id: str,
+        vector: list[float],
+        created_at: str,
+    ) -> None:
+        """Insert an entry and its vector in a single transaction."""
+
+        with self._conn() as conn:
+            self._insert_entry(conn, entry)
+            self._upsert_embedding_row(conn, entry.id, version_id, vector, created_at)
+
+    def _insert_entry(self, conn: sqlite3.Connection, entry: MemoryEntry) -> None:
+        conn.execute(
+            """
+            INSERT INTO entries (
+                id, tier, workspace_id, project_id, scope_level, user_id, agent_id, visibility, source,
+                type, status, content, context, tags_json, sensitivity_tags_json,
+                metadata_json, confidence, content_hash, created_at, updated_at,
+                embedding_version_id, encrypted, redacted
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.id,
+                entry.tier.value,
+                entry.scope.workspace_id,
+                entry.scope.project_id,
+                entry.scope.scope_level.value,
+                entry.scope.user_id,
+                entry.scope.agent_id,
+                entry.visibility.value,
+                entry.source,
+                entry.type.value,
+                entry.status.value,
+                entry.content,
+                entry.context,
+                json.dumps(entry.tags, ensure_ascii=True),
+                json.dumps(entry.sensitivity_tags, ensure_ascii=True),
+                json.dumps(entry.metadata, ensure_ascii=True, sort_keys=True),
+                float(entry.confidence),
+                entry.content_hash,
+                self._to_iso(entry.created_at),
+                self._to_iso(entry.updated_at),
+                entry.embedding_version_id,
+                int(entry.encrypted),
+                int(entry.redacted),
+            ),
+        )
+        self._replace_links(conn, entry.id, entry.links)
 
     def update_entry(self, entry: MemoryEntry) -> None:
         with self._conn() as conn:
@@ -502,24 +590,34 @@ class SQLiteMemoryStore:
 
     def upsert_embedding(self, entry_id: str, version_id: str, vector: list[float], created_at: str) -> None:
         with self._conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO embeddings (entry_id, version_id, vector_json, created_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(entry_id, version_id)
-                DO UPDATE SET vector_json = excluded.vector_json, created_at = excluded.created_at
-                """,
-                (
-                    entry_id,
-                    version_id,
-                    json.dumps(vector, ensure_ascii=True),
-                    created_at,
-                ),
-            )
-            conn.execute(
-                "UPDATE entries SET embedding_version_id = ?, updated_at = ? WHERE id = ?",
-                (version_id, created_at, entry_id),
-            )
+            self._upsert_embedding_row(conn, entry_id, version_id, vector, created_at)
+
+    def _upsert_embedding_row(
+        self,
+        conn: sqlite3.Connection,
+        entry_id: str,
+        version_id: str,
+        vector: list[float],
+        created_at: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO embeddings (entry_id, version_id, vector_json, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(entry_id, version_id)
+            DO UPDATE SET vector_json = excluded.vector_json, created_at = excluded.created_at
+            """,
+            (
+                entry_id,
+                version_id,
+                json.dumps(vector, ensure_ascii=True),
+                created_at,
+            ),
+        )
+        conn.execute(
+            "UPDATE entries SET embedding_version_id = ?, updated_at = ? WHERE id = ?",
+            (version_id, created_at, entry_id),
+        )
 
     def get_embedding(self, entry_id: str, version_id: str) -> Optional[list[float]]:
         with self._conn() as conn:

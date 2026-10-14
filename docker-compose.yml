@@ -17,12 +17,13 @@ services:
       - MCP_MEMORY_HOST=0.0.0.0
       - MCP_MEMORY_PORT=8767
       - MCP_MEMORY_SSE_ENABLED=false
+      - LLM_MEMORY_API_TOKEN=${LLM_MEMORY_API_TOKEN:?set LLM_MEMORY_API_TOKEN to a strong random token}
 
     volumes:
       - ./data:/data
 
     ports:
-      - "8767:8767"
+      - "127.0.0.1:8767:8767"
 
     restart: unless-stopped
 

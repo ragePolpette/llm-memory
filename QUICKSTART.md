@@ -45,13 +45,22 @@ Health check:
 curl http://127.0.0.1:8767/health
 ```
 
-Local read-only admin endpoints:
+Cross-platform launcher with local-only defaults:
 
 ```bash
-curl http://127.0.0.1:8767/admin/summary
-curl "http://127.0.0.1:8767/admin/audit?limit=20"
-curl "http://127.0.0.1:8767/admin/projects?limit=20"
+python scripts/serve.py
+python scripts/serve.py --transport stdio
 ```
+
+Admin endpoints require a bearer token. Start the server with `LLM_MEMORY_API_TOKEN` set, then:
+
+```bash
+curl -H "Authorization: Bearer $LLM_MEMORY_API_TOKEN" http://127.0.0.1:8767/admin/summary
+curl -H "Authorization: Bearer $LLM_MEMORY_API_TOKEN" "http://127.0.0.1:8767/admin/audit?limit=20"
+curl -H "Authorization: Bearer $LLM_MEMORY_API_TOKEN" "http://127.0.0.1:8767/admin/projects?limit=20"
+```
+
+When the token is set, MCP clients must send the same `Authorization` header to `/mcp`.
 
 ## 4. Test
 

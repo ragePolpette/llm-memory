@@ -16,16 +16,22 @@ docker build -t llm-memory:latest .
 
 ## Start with Docker Compose
 
+The container binds to `0.0.0.0` internally, so the server requires an API token. Compose refuses to start without it:
+
 ```bash
+export LLM_MEMORY_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 docker compose up -d --build
 docker compose logs -f llm-memory
 docker compose ps
 ```
 
-The container exposes:
+The port is published on the host loopback interface only:
 
-- `http://127.0.0.1:8767/health`
-- `http://127.0.0.1:8767/mcp`
+- `http://127.0.0.1:8767/health` (public)
+- `http://127.0.0.1:8767/mcp` (requires `Authorization: Bearer $LLM_MEMORY_API_TOKEN`)
+- `http://127.0.0.1:8767/admin/*` (requires the token)
+
+The image runs as the unprivileged `app` user (uid 10001). On Linux, make sure the host `./data` directory is writable by that uid, for example `sudo chown -R 10001:10001 ./data`.
 
 ## Stop and Restart
 
@@ -58,6 +64,10 @@ environment:
   - MCP_MEMORY_HOST=0.0.0.0
   - MCP_MEMORY_PORT=8767
   - MCP_MEMORY_SSE_ENABLED=false
+  - LLM_MEMORY_API_TOKEN=${LLM_MEMORY_API_TOKEN:?set LLM_MEMORY_API_TOKEN to a strong random token}
+
+ports:
+  - "127.0.0.1:8767:8767"
 ```
 
 ## Health Check
@@ -118,5 +128,5 @@ Then remove the `data/` directory manually, only if you want a full reset.
 ## Note
 
 - This Docker configuration is intended for local use or a small trusted team.
-- It is not intended as a public, internet-facing deployment. The HTTP server has no authentication; see [SECURITY.md](SECURITY.md).
+- It is not intended as a public, internet-facing deployment. The bearer token is a single shared secret and there is no TLS; see [SECURITY.md](SECURITY.md).
 - To use MCP over stdio, run the runtime directly outside the container.
