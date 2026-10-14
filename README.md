@@ -18,8 +18,9 @@ Most agent workflows handle short-term context well but have no durable memory. 
 - Tiered memory: strong memory for durable knowledge, fast memory for episodic operational notes
 - Scope hierarchy: retrieval can compose `project`, `workspace`, and `global`
 - Governance: promotion, invalidation, deduplication, and an audit trail close to the write path
-- Optional encryption for sensitive payloads and a configurable privacy policy
-- Import/export through JSONL, Markdown (`memory.md`), and SQLite-backed data
+- Optional encryption for sensitive payloads (install the `crypto` extra) and a configurable privacy policy
+- Import/export through JSONL, Markdown (`memory.md`), and SQLite-backed data, limited to the entries the caller can read
+- Optional bearer token authentication for the HTTP transport
 - No cloud service required for the default setup
 
 ## Architecture
@@ -74,6 +75,18 @@ python -m src.mcp_server.http_server
 curl http://127.0.0.1:8767/health
 ```
 
+`scripts/serve.py` is a cross-platform launcher that applies the local-only defaults (hash embeddings, SQLite, outbound network blocked) and works the same on Linux, macOS and Windows:
+
+```bash
+python scripts/serve.py                     # HTTP on 127.0.0.1:8767
+python scripts/serve.py --transport stdio
+python scripts/serve.py --port 9000
+```
+
+Stop the server with Ctrl+C. The former Windows `.bat` launchers have been removed.
+
+To enable at-rest encryption of sensitive payloads, install the optional extra: `pip install -e ".[crypto]"`.
+
 More detail, including request payload examples, is in [QUICKSTART.md](QUICKSTART.md). Container usage is described in [DOCKER_GUIDE.md](DOCKER_GUIDE.md).
 
 ## Configuration
@@ -88,6 +101,7 @@ Configuration is read from environment variables. [`.env.example`](.env.example)
 - `MEMORY_ENCRYPTION_ENABLED=false`
 - `MEMORY_MULTI_PROJECT_ENABLED=false`
 - `MCP_MEMORY_HOST=127.0.0.1` and `MCP_MEMORY_PORT=8767`
+- `LLM_MEMORY_API_TOKEN` unset (see [Authentication](#authentication))
 
 ## Usage
 
@@ -141,9 +155,11 @@ Apply a distillation result from a local JSON file:
 llm-memory-fast-distill apply --input result.json
 ```
 
+Tool `limit` arguments are capped at 100 (50 for `search_inference_memory`).
+
 ### HTTP Endpoints
 
-Local admin and health endpoints:
+Local admin and health endpoints. `/health` is always public; the `/admin/*` endpoints require the bearer token and are disabled when `LLM_MEMORY_API_TOKEN` is not set:
 
 - `GET /health`
 - `GET /admin/summary`
@@ -173,9 +189,22 @@ Enable it explicitly with:
 - `FAST_MEMORY_AGENT_DISTILLATION_ENABLED=true`
 - `FAST_MEMORY_AGENT_DISTILLATION_APPLY_ENABLED=true`
 
+## Authentication
+
+Set `LLM_MEMORY_API_TOKEN` to a strong random value (for example `python -c "import secrets; print(secrets.token_urlsafe(32))"`) to enable bearer token authentication on the HTTP transport:
+
+- `/mcp`, `/sse` and `/messages/` require `Authorization: Bearer <token>` when the token is set, and stay open on loopback when it is not.
+- `/admin/*` always requires the token and answers `403` when no token is configured.
+- `/health` stays public, but only returns diagnostics to authenticated callers when a token is set.
+- The server refuses to start when `MCP_MEMORY_HOST` is not a loopback address and no token is configured.
+
+## Embedding Versions
+
+Each stored vector is tagged with the embedding version that produced it. At startup the server compares the active version with the configured provider. When they differ it logs an `embedding_version_mismatch` warning and `memory.search` is refused with an explicit error until you run `memory.reembed` without `model_id`/`dim`, which re-embeds existing entries with the configured provider and activates it. Writes keep working in the meantime. A write is rejected (`reason: embedding-failed`) when the provider cannot produce a vector, so every stored entry is searchable.
+
 ## Security
 
-Outbound network access is blocked by default, the HTTP transport binds to loopback by default, and import/export paths are confined to `MEMORY_IMPORT_EXPORT_BASE_DIR`. The HTTP server does not authenticate clients and must not be exposed to untrusted networks. See [SECURITY.md](SECURITY.md) for the threat model and how to report vulnerabilities.
+Outbound network access is blocked by default, the HTTP transport binds to loopback by default, and import/export paths are confined to `MEMORY_IMPORT_EXPORT_BASE_DIR`. Exports only contain entries the caller is allowed to read. The activity log on stderr records content hashes and lengths, never content. See [SECURITY.md](SECURITY.md) for the threat model and how to report vulnerabilities.
 
 ## Development
 

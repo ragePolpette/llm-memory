@@ -1,4 +1,4 @@
-"""Definizione tools MCP v2."""
+"""MCP v2 tool definitions."""
 
 from __future__ import annotations
 
@@ -10,6 +10,22 @@ from mcp.types import Tool, TextContent
 from ..config import MemoryScope, Tier
 from ..models import EntryType
 from ..service.memory_service import ActorContext, MemoryInputError, MemoryService
+
+
+MAX_LIMIT = 100
+
+
+def _bounded_limit(arguments: dict, default: int, *, maximum: int = MAX_LIMIT) -> int:
+    raw = arguments.get("limit")
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        raise ValueError("limit must be an integer")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit must be an integer") from exc
+    return max(1, min(value, maximum))
 
 
 def _json_text(payload: dict | list) -> list[TextContent]:
@@ -127,6 +143,7 @@ def _build_inference_capture_payload(arguments: dict, actor: ActorContext, servi
     return {
         "content": arguments["content"],
         "context": arguments.get("context")
+        # Kept in Italian: the persistence policy currently matches Italian semantic markers.
         or (
             f"Il progetto {product_target} richiede di conservare questa inferenza tecnica riusabile "
             f"per la fase {phase} nel repo {repo_target}."
@@ -148,7 +165,7 @@ def _build_inference_search_plan(arguments: dict, service: MemoryService) -> tup
     scope_mode, scope = _normalize_inference_scope(arguments, service)
     product_target = str(arguments.get("product_target", "")).strip()
     query = str(arguments["query"]).strip()
-    limit = int(arguments.get("limit", 10))
+    limit = _bounded_limit(arguments, 10, maximum=50)
     search_args = {
         "query": query,
         "limit": limit,
@@ -213,7 +230,7 @@ def _map_inference_bundles(
 
 
 def register_tools(server: Server, memory_service: MemoryService):
-    """Registra tool MCP v2."""
+    """Register the MCP v2 tools."""
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -221,11 +238,10 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.about",
                 description=(
-                    "Scopo, confini e guida compilazione: salva solo memorie operative persistenti "
-                    "(decisioni, fatti stabili, regole, assunzioni). Non salvare contesto temporaneo "
-                    "di chat o retrieval di codice repository. Espone il modello corrente di "
-                    "single-project mode / multi-project mode e la scope hierarchy "
-                    "project/workspace/global."
+                    "Purpose, boundaries and filling guide: store only persistent operational memories "
+                    "(decisions, stable facts, rules, assumptions). Do not store temporary chat context "
+                    "or repository code retrieval. Describes the current single-project / "
+                    "multi-project mode and the project/workspace/global scope hierarchy."
                 ),
                 inputSchema={
                     "type": "object",
@@ -234,7 +250,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.list_projects",
-                description="Elenca i progetti registrati nel workspace corrente.",
+                description="List the projects registered in the current workspace.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -247,7 +263,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.get_project_info",
-                description="Restituisce metadata e stato di un progetto registrato.",
+                description="Return metadata and state of a registered project.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -262,9 +278,9 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.create_project",
                 description=(
-                    "Crea esplicitamente un progetto nel workspace corrente se non esiste. In "
-                    "multi-project mode e' il percorso amministrativo raccomandato prima delle "
-                    "scritture project-scoped."
+                    "Explicitly create a project in the current workspace if it does not exist. In "
+                    "multi-project mode this is the recommended administrative step before "
+                    "project-scoped writes."
                 ),
                 inputSchema={
                     "type": "object",
@@ -272,8 +288,8 @@ def register_tools(server: Server, memory_service: MemoryService):
                         "project_id": {
                             "type": "string",
                             "description": (
-                                "Identificatore stabile del progetto da creare o recuperare nel "
-                                "catalogo progetti del workspace corrente."
+                                "Stable identifier of the project to create or fetch in the "
+                                "project catalog of the current workspace."
                             ),
                         },
                         "display_name": {"type": "string"},
@@ -289,8 +305,8 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.scope_overview",
                 description=(
-                    "Mostra i bucket operativi e i conteggi correnti per la scope hierarchy "
-                    "project/workspace/global nel workspace attivo."
+                    "Show the operational buckets and current counts for the "
+                    "project/workspace/global scope hierarchy in the active workspace."
                 ),
                 inputSchema={
                     "type": "object",
@@ -305,11 +321,11 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.add",
                 description=(
-                    "Aggiunge memoria operativa persistente tiered. Usare per decisioni/fatti/regole riusabili, "
-                    "non per dump di contesto. Compilare sempre writer_model + context_fingerprint + importance "
-                    "quando enforcement self-eval e attivo. scope.scope_level definisce il bucket "
-                    "intenzionale (project/workspace/global); in multi-project mode le scritture "
-                    "project-scoped richiedono scope.project_id esplicito."
+                    "Add tiered persistent operational memory. Use it for reusable decisions/facts/rules, "
+                    "not for context dumps. Always fill writer_model + context_fingerprint + importance "
+                    "when self-eval enforcement is active. scope.scope_level selects the intended "
+                    "bucket (project/workspace/global); in multi-project mode project-scoped writes "
+                    "require an explicit scope.project_id."
                 ),
                 inputSchema={
                     "type": "object",
@@ -332,23 +348,23 @@ def register_tools(server: Server, memory_service: MemoryService):
                         "scope": {
                             "type": "object",
                             "description": (
-                                "Scope esplicito della memoria. Usare scope_level per scegliere il "
-                                "bucket target nella scope hierarchy."
+                                "Explicit memory scope. Use scope_level to choose the target "
+                                "bucket in the scope hierarchy."
                             ),
                             "properties": {
                                 "scope_level": {
                                     "type": "string",
                                     "enum": ["project", "workspace", "global"],
                                     "description": (
-                                        "Livello di scope intenzionale per la scrittura: project, "
-                                        "workspace o global."
+                                        "Intended scope level for the write: project, "
+                                        "workspace or global."
                                     ),
                                 },
                                 "workspace_id": {"type": "string"},
                                 "project_id": {
                                     "type": "string",
                                     "description": (
-                                        "Richiesto per scritture project-scoped quando "
+                                        "Required for project-scoped writes when "
                                         "MEMORY_MULTI_PROJECT_ENABLED=true."
                                     ),
                                 },
@@ -425,9 +441,9 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.search",
                 description=(
-                    "Ricerca semantica su memorie operative persistenti; non destinato a contesto "
-                    "codice repository. Supporta composizione esplicita degli scope "
-                    "project/workspace/global tramite include_project/include_workspace/include_global."
+                    "Semantic search over persistent operational memories; not meant for repository "
+                    "code context. Supports explicit composition of project/workspace/global scopes "
+                    "through include_project/include_workspace/include_global. Results are capped at 100."
                 ),
                 inputSchema={
                     "type": "object",
@@ -438,47 +454,47 @@ def register_tools(server: Server, memory_service: MemoryService):
                         "scope": {
                             "type": "object",
                             "description": (
-                                "Scope base della ricerca. Se lo scope_level resta project e il "
-                                "server e' in multi-project mode, usare scope.project_id esplicito."
+                                "Base scope of the search. If scope_level stays project and the "
+                                "server is in multi-project mode, pass an explicit scope.project_id."
                             ),
                             "properties": {
                                 "scope_level": {
                                     "type": "string",
                                     "enum": ["project", "workspace", "global"],
                                     "description": (
-                                        "Scope base della ricerca. Le flag include_* possono "
-                                        "ampliare la composizione verso altri bucket."
+                                        "Base scope of the search. The include_* flags can "
+                                        "extend the composition to other buckets."
                                     ),
                                 },
                                 "workspace_id": {"type": "string"},
                                 "project_id": {
                                     "type": "string",
                                     "description": (
-                                        "Project scope di partenza. Richiesto per ricerche "
-                                        "project-scoped quando MEMORY_MULTI_PROJECT_ENABLED=true."
+                                        "Starting project scope. Required for project-scoped "
+                                        "searches when MEMORY_MULTI_PROJECT_ENABLED=true."
                                     ),
                                 },
                                 "user_id": {"type": "string"},
                                 "agent_id": {"type": "string"},
                             },
                         },
-                        "limit": {"type": "integer", "default": 10},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
                         "include_invalidated": {"type": "boolean", "default": False},
                         "tier": {"type": "string", "enum": ["tier-1", "tier-2", "tier-3"]},
                         "include_project": {
                             "type": "boolean",
                             "default": True,
-                            "description": "Include i bucket project-scoped nella composizione della ricerca.",
+                            "description": "Include project-scoped buckets in the search composition.",
                         },
                         "include_workspace": {
                             "type": "boolean",
                             "default": True,
-                            "description": "Include i bucket workspace-scoped nella composizione della ricerca.",
+                            "description": "Include workspace-scoped buckets in the search composition.",
                         },
                         "include_global": {
                             "type": "boolean",
                             "default": True,
-                            "description": "Include i bucket global/shared nella composizione della ricerca.",
+                            "description": "Include global/shared buckets in the search composition.",
                         },
                     },
                     "required": ["query", "agent_id"],
@@ -487,8 +503,8 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.log_fast",
                 description=(
-                    "Scrive nella fast memory episodica del progetto corrente. Usare per tentativi, "
-                    "incidenti, fix temporanei e note operative che non devono entrare subito nella memoria forte."
+                    "Write to the episodic fast memory of the current project. Use it for attempts, "
+                    "incidents, temporary fixes and operational notes that should not enter strong memory yet."
                 ),
                 inputSchema={
                     "type": "object",
@@ -544,8 +560,8 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.list_fast",
                 description=(
-                    "Elenca le fast-memory entries del progetto corrente con filtri base su event_type, "
-                    "resolved e distillation_status."
+                    "List the fast-memory entries of the current project with basic filters on event_type, "
+                    "resolved and distillation_status."
                 ),
                 inputSchema={
                     "type": "object",
@@ -562,7 +578,7 @@ def register_tools(server: Server, memory_service: MemoryService):
                                 "agent_id": {"type": "string"},
                             },
                         },
-                        "limit": {"type": "integer", "default": 100},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
                         "event_type": {"type": "string"},
                         "resolved": {"type": "boolean"},
                         "distillation_status": {
@@ -575,7 +591,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.get_fast",
-                description="Recupera una fast-memory entry per id nel perimetro di scope corrente.",
+                description="Fetch a fast-memory entry by id within the current scope.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -590,8 +606,8 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.rank_fast_candidates",
                 description=(
-                    "Fase 1 puramente matematica: clusterizza e ordina le fast-memory entries pendenti "
-                    "per guidare la distillazione."
+                    "Purely mathematical phase 1: cluster and rank pending fast-memory entries "
+                    "to guide distillation."
                 ),
                 inputSchema={
                     "type": "object",
@@ -599,7 +615,7 @@ def register_tools(server: Server, memory_service: MemoryService):
                         "agent_id": {"type": "string"},
                         "user_id": {"type": "string"},
                         "scope": {"type": "object"},
-                        "limit": {"type": "integer", "default": 10},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
                         "include_resolved": {"type": "boolean", "default": False},
                         "distillation_status": {
                             "type": "string",
@@ -612,8 +628,8 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.prepare_fast_distillation",
                 description=(
-                    "Tool protetto di fase 2: prepara un candidate pack e un prompt fisso per la "
-                    "distillazione agentica da eseguire manualmente con Codex, Claude o un harness esterno."
+                    "Protected phase 2 tool: prepare a candidate pack and a fixed prompt for agentic "
+                    "distillation, to be run manually with Codex, Claude or an external harness."
                 ),
                 inputSchema={
                     "type": "object",
@@ -637,8 +653,8 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.apply_fast_distillation",
                 description=(
-                    "Applica l'output JSON della distillazione agentica. Protetto, con dry_run=true di default "
-                    "per validare le decisioni prima di mutare fast memory o memoria forte."
+                    "Apply the JSON output of agentic distillation. Protected, with dry_run=true by default "
+                    "to validate decisions before mutating fast or strong memory."
                 ),
                 inputSchema={
                     "type": "object",
@@ -657,8 +673,8 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.summarize_fast",
                 description=(
-                    "Segna una fast-memory entry come sintetizzata e salva un summary di distillazione "
-                    "con reason, cluster opzionale e stato resolved opzionale."
+                    "Mark a fast-memory entry as summarized and store a distillation summary "
+                    "with a reason, an optional cluster and an optional resolved state."
                 ),
                 inputSchema={
                     "type": "object",
@@ -678,8 +694,8 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.discard_fast",
                 description=(
-                    "Marca una fast-memory entry come scartata dal processo di distillazione, "
-                    "mantenendo audit trail e stato finale opzionale."
+                    "Mark a fast-memory entry as discarded by the distillation process, "
+                    "keeping the audit trail and an optional final state."
                 ),
                 inputSchema={
                     "type": "object",
@@ -697,8 +713,8 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="memory.promote_fast",
                 description=(
-                    "Promuove una fast-memory entry nella memoria forte creando una knowledge entry "
-                    "ricercabile e marcando la sorgente come promoted."
+                    "Promote a fast-memory entry into strong memory by creating a searchable knowledge "
+                    "entry and marking the source as promoted."
                 ),
                 inputSchema={
                     "type": "object",
@@ -731,7 +747,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.get",
-                description="Recupera una memoria operativa per id (v2)",
+                description="Fetch an operational memory by id (v2).",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -746,8 +762,8 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="capture_inference_memory",
                 description=(
-                    "Wrapper ergonomico per insight tecnici dell'harness. Salva una inferenza "
-                    "persistente con scope pubblico semplificato project|global; workspace resta interno."
+                    "Ergonomic wrapper for harness technical insights. Stores a persistent inference "
+                    "with a simplified public scope project|global; workspace stays internal."
                 ),
                 inputSchema={
                     "type": "object",
@@ -781,8 +797,8 @@ def register_tools(server: Server, memory_service: MemoryService):
             Tool(
                 name="search_inference_memory",
                 description=(
-                    "Ricerca insight tecnici persistiti dall'harness. Espone solo scope project|global "
-                    "e restituisce risultati pronti da consumare senza reinterpretare memory.search."
+                    "Search technical insights persisted by the harness. Exposes only project|global scope "
+                    "and returns ready-to-use results without reinterpreting memory.search."
                 ),
                 inputSchema={
                     "type": "object",
@@ -802,7 +818,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.invalidate",
-                description="Invalida memorie obsolete/errate con motivo e audit trail (v2)",
+                description="Invalidate obsolete or wrong memories with a reason and an audit trail (v2).",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -817,7 +833,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.promote",
-                description="Promuove memorie operative verso tier superiore con consolidamento opzionale (v2)",
+                description="Promote operational memories to a higher tier with optional consolidation (v2).",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -839,7 +855,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.reembed",
-                description="Reindex/reembed incrementale delle memorie operative (v2)",
+                description="Incremental reindex/re-embed of operational memories (v2). Without model_id/dim it re-embeds with the configured provider, which also resolves an embedding version mismatch.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -856,7 +872,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.export",
-                description="Export locale memorie operative in jsonl / memory.md / sqlite (v2)",
+                description="Local export of the operational memories readable by the caller in the current project, as jsonl / memory.md / sqlite (v2).",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -871,7 +887,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             ),
             Tool(
                 name="memory.import",
-                description="Import locale memorie operative da jsonl / memory.md (v2)",
+                description="Local import of operational memories from jsonl / memory.md (v2).",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -897,7 +913,7 @@ def register_tools(server: Server, memory_service: MemoryService):
                     "api_version": "v2",
                     "server": "llm-memory",
                     "self_eval_enforced": bool(memory_service.config.self_eval_enforced),
-                    "purpose": "Memoria operativa persistente (decisioni, preferenze, regole, fatti di lavoro).",
+                    "purpose": "Persistent operational memory (decisions, preferences, rules, working facts).",
                     "multi_project_enabled": bool(memory_service.config.multi_project_enabled),
                     "scope_hierarchy": ["project", "workspace", "global"],
                     "capabilities": [
@@ -905,44 +921,44 @@ def register_tools(server: Server, memory_service: MemoryService):
                     ],
                     "tool_map": {
                         "generic": {
-                            "memory.about": "Guida server, boundary e scope hierarchy.",
-                            "memory.add": "Scrittura generica di memoria persistente.",
-                            "memory.log_fast": "Scrittura esplicita nella fast memory episodica.",
-                            "memory.list_fast": "Elenco fast-memory entries del progetto corrente.",
-                            "memory.get_fast": "Recupera una fast-memory entry per id.",
-                            "memory.rank_fast_candidates": "Fase 1 matematica: cluster e ranking candidati.",
-                            "memory.prepare_fast_distillation": "Fase 2 protetta: prepara pack e prompt per distillazione agentica.",
-                            "memory.apply_fast_distillation": "Applica l'output JSON della distillazione agentica con dry_run di default.",
-                            "memory.summarize_fast": "Segna una fast-memory entry come sintetizzata.",
-                            "memory.discard_fast": "Scarta una fast-memory entry nel processo di distillazione.",
-                            "memory.promote_fast": "Promuove una fast-memory entry nella memoria forte.",
-                            "memory.search": "Ricerca generica sulle memorie persistenti.",
+                            "memory.about": "Server guide, boundaries and scope hierarchy.",
+                            "memory.add": "Generic persistent memory write.",
+                            "memory.log_fast": "Explicit write to the episodic fast memory.",
+                            "memory.list_fast": "List fast-memory entries of the current project.",
+                            "memory.get_fast": "Fetch a fast-memory entry by id.",
+                            "memory.rank_fast_candidates": "Mathematical phase 1: candidate clustering and ranking.",
+                            "memory.prepare_fast_distillation": "Protected phase 2: prepare pack and prompt for agentic distillation.",
+                            "memory.apply_fast_distillation": "Apply the agentic distillation JSON output, dry_run by default.",
+                            "memory.summarize_fast": "Mark a fast-memory entry as summarized.",
+                            "memory.discard_fast": "Discard a fast-memory entry during distillation.",
+                            "memory.promote_fast": "Promote a fast-memory entry into strong memory.",
+                            "memory.search": "Generic search over persistent memories.",
                         },
                         "harness": {
                             "capture_inference_memory": (
-                                "Salva insight tecnici dell'harness con contract ridotto e scope pubblico project|global."
+                                "Store harness technical insights with a reduced contract and public scope project|global."
                             ),
                             "search_inference_memory": (
-                                "Ricerca insight tecnici dell'harness e restituisce item pronti da consumare."
+                                "Search harness technical insights and return ready-to-use items."
                             ),
                         },
                     },
                     "harness_scope_guide": {
-                        "project": "Usa per conoscenza specifica di prodotto/repo corrente.",
-                        "global": "Usa per conoscenza trasversale non project-specific.",
-                        "workspace": "Interno al server; non esposto dal layer harness.",
+                        "project": "Use for knowledge specific to the current product/repo.",
+                        "global": "Use for cross-cutting knowledge that is not project-specific.",
+                        "workspace": "Internal to the server; not exposed by the harness layer.",
                     },
                     "boundaries": [
-                        "Non salvare memorie di contesto temporaneo conversazionale",
-                        "Non e' un indicizzatore di codice repository",
-                        "Per contesto codice/documenti usare llm-context",
-                        "La persistenza e' deny-by-default e richiede superamento della policy centrale",
+                        "Do not store temporary conversational context",
+                        "It is not a repository code indexer",
+                        "For code/document context use llm-context",
+                        "Persistence is deny-by-default and must pass the central policy",
                     ],
                     "what_to_store": [
-                        "Decisioni operative durature",
-                        "Fatti stabili di progetto e vincoli",
-                        "Assunzioni/unknown da tracciare nel tempo",
-                        "Regole di lavoro riusabili",
+                        "Durable operational decisions",
+                        "Stable project facts and constraints",
+                        "Assumptions/unknowns to track over time",
+                        "Reusable working rules",
                     ],
                     "how_to_fill_memory_add": {
                         "always_recommended": [
@@ -959,13 +975,13 @@ def register_tools(server: Server, memory_service: MemoryService):
                         "importance_fields": [
                             "confidence|predictive_confidence|predictive_confidence_before OR proxy_disagreement|disagreement_score OR self_rating|surprise_self_rating",
                             "tool_steps/correction_count/inference_level",
-                            "negative_impact (0..1) se evento critico",
-                            "is_external true solo se dato esterno reale",
+                            "negative_impact (0..1) for critical events",
+                            "is_external true only for real external data",
                         ],
                         "context_fingerprint_fields": [
                             "conversation_id",
                             "task_id",
-                            "retrieved_ids (ordinati e deduplicati dal server)",
+                            "retrieved_ids (sorted and deduplicated by the server)",
                             "tool_trace_fingerprint",
                             "prompt_fingerprint",
                         ],
@@ -1028,7 +1044,7 @@ def register_tools(server: Server, memory_service: MemoryService):
             bundles = await memory_service.search(
                 query=arguments["query"],
                 actor=actor,
-                limit=int(arguments.get("limit", 10)),
+                limit=_bounded_limit(arguments, 10),
                 include_invalidated=bool(arguments.get("include_invalidated", False)),
                 tier=arguments.get("tier"),
                 include_project=bool(arguments.get("include_project", True)),
@@ -1048,7 +1064,7 @@ def register_tools(server: Server, memory_service: MemoryService):
         if name == "memory.list_fast":
             entries = memory_service.list_fast(
                 actor=actor,
-                limit=int(arguments.get("limit", 100)),
+                limit=_bounded_limit(arguments, 100),
                 event_type=arguments.get("event_type"),
                 resolved=arguments.get("resolved"),
                 distillation_status=arguments.get("distillation_status"),
@@ -1068,7 +1084,7 @@ def register_tools(server: Server, memory_service: MemoryService):
         if name == "memory.rank_fast_candidates":
             payload = memory_service.rank_fast_candidates_for_actor(
                 actor=actor,
-                limit=int(arguments.get("limit", 10)),
+                limit=_bounded_limit(arguments, 10),
                 include_resolved=bool(arguments.get("include_resolved", False)),
                 distillation_status=arguments.get("distillation_status"),
             )

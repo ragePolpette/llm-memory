@@ -1,9 +1,8 @@
-"""MCP Server stdio per LLM Memory v2 (local-only)."""
+"""MCP stdio server for LLM Memory v2 (local-only)."""
 
 from __future__ import annotations
 
 import asyncio
-import logging
 import sys
 
 import structlog
@@ -12,21 +11,15 @@ from mcp.server.stdio import stdio_server
 
 from ..bootstrap import build_runtime
 from ..config import get_config
+from ..logging_setup import configure_logging
 from .tools import register_tools
 
-structlog.configure(
-    processors=[
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.add_log_level,
-        structlog.dev.ConsoleRenderer(),
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-)
+configure_logging()
 logger = structlog.get_logger()
 
 
 class MemoryServer:
-    """Server MCP locale con runtime v2."""
+    """Local MCP server backed by the v2 runtime."""
 
     def __init__(self):
         config = get_config()

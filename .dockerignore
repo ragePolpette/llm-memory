@@ -1,4 +1,4 @@
-# Docker ignore file per LLM Memory
+# Docker ignore file for LLM Memory
 
 # Python
 __pycache__/
@@ -33,7 +33,7 @@ ENV/
 *.swp
 *.swo
 
-# Data directories (non includere nel build)
+# Data directories (never baked into the image)
 memories/
 data/
 logs/
@@ -59,9 +59,3 @@ pytest.ini
 # OS
 .DS_Store
 Thumbs.db
-
-# Scripts non necessari nel container
-start_server.bat
-start_server_silent.bat
-stop_server.bat
-*.bat

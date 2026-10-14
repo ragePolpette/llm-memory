@@ -1,4 +1,4 @@
-"""Configurazione centralizzata per LLM Memory."""
+"""Centralized configuration for LLM Memory."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class MemoryScope(str, Enum):
-    """Visibilita della memoria nel runtime v2."""
+    """Memory visibility in the v2 runtime."""
 
     PRIVATE = "private"
     SHARED = "shared"
@@ -19,7 +19,7 @@ class MemoryScope(str, Enum):
 
 
 class ScopeLevel(str, Enum):
-    """Livello logico di scope per la gerarchia memoria."""
+    """Logical scope level in the memory hierarchy."""
 
     PROJECT = "project"
     WORKSPACE = "workspace"
@@ -27,7 +27,7 @@ class ScopeLevel(str, Enum):
 
 
 class Tier(str, Enum):
-    """Tier di memoria."""
+    """Memory tier."""
 
     TIER_1 = "tier-1"
     TIER_2 = "tier-2"
@@ -47,7 +47,7 @@ class VectorBackend(str, Enum):
 
 
 class EmbeddingProviderKind(str, Enum):
-    """Provider embedding supportati."""
+    """Supported embedding providers."""
 
     HASH_LOCAL = "hash-local"
     SENTENCE_TRANSFORMERS = "sentence-transformers"
@@ -80,7 +80,7 @@ def _env_csv(key: str, default: list[str]) -> list[str]:
 
 
 class Config(BaseModel):
-    """Configurazione principale del sistema."""
+    """Main system configuration."""
 
     # Runtime storage (v2)
     storage_backend: StorageBackend = Field(
@@ -208,6 +208,10 @@ class Config(BaseModel):
     mcp_sse_enabled: bool = Field(
         default_factory=lambda: _env_bool("MCP_MEMORY_SSE_ENABLED", False)
     )
+    api_token: Optional[str] = Field(
+        default_factory=lambda: os.getenv("LLM_MEMORY_API_TOKEN"),
+        repr=False,
+    )
     mcp_allowed_hosts: list[str] = Field(
         default_factory=lambda: _env_csv(
             "MCP_MEMORY_ALLOWED_HOSTS",
@@ -235,6 +239,14 @@ class Config(BaseModel):
         if not normalized:
             raise ValueError("must be a non-empty string")
         return normalized
+
+    @field_validator("api_token")
+    @classmethod
+    def _optional_token(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
     @field_validator("embedding_dim", "embedding_batch_size")
     @classmethod
@@ -304,6 +316,7 @@ class Config(BaseModel):
                 "host": self.mcp_host,
                 "port": self.mcp_port,
                 "sse_enabled": self.mcp_sse_enabled,
+                "auth_enabled": self.api_token is not None,
             },
             "multi_project_enabled": self.multi_project_enabled,
             "self_eval_enforced": self.self_eval_enforced,
@@ -314,7 +327,7 @@ class Config(BaseModel):
 
 
 def get_config() -> Config:
-    """Crea e ritorna la configurazione dal environment."""
+    """Build and return the configuration from the environment."""
 
     config = Config()
     config.ensure_runtime_dirs()

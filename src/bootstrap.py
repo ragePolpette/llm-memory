@@ -1,4 +1,4 @@
-"""Bootstrap runtime componenti memoria v2."""
+"""Bootstrap of the v2 memory runtime components."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from .config import Config
 from .embedding.embedding_service import get_embedding_provider
 from .security import PrivacyPolicy, block_outbound_network, build_cipher
+from .security.crypto import default_salt_path
 from .service.memory_service import MemoryService
 from .storage.sqlite_store import SQLiteMemoryStore
 from .vectordb.sqlite_vector_store import SQLiteVectorStore
@@ -14,7 +15,7 @@ from .vectordb.sqlite_vector_store import SQLiteVectorStore
 
 @dataclass
 class MemoryRuntime:
-    """Container componenti runtime."""
+    """Runtime component container."""
 
     config: Config
     store: SQLiteMemoryStore
@@ -23,10 +24,11 @@ class MemoryRuntime:
 
     async def prewarm(self) -> None:
         await self.service.embedding_provider.prepare()
+        self.service.check_embedding_version()
 
 
 def build_runtime(config: Config) -> MemoryRuntime:
-    """Costruisce runtime locale completo."""
+    """Build the complete local runtime."""
 
     if not config.allow_outbound_network:
         block_outbound_network(allow_loopback=True)
@@ -40,7 +42,11 @@ def build_runtime(config: Config) -> MemoryRuntime:
         drop_metadata_keys=config.privacy_drop_metadata_keys,
         encrypt_sensitive=config.privacy_encrypt_sensitive,
     )
-    cipher = build_cipher(config.encryption_enabled, config.encryption_key_env)
+    cipher = build_cipher(
+        config.encryption_enabled,
+        config.encryption_key_env,
+        salt_path=default_salt_path(config.sqlite_db_path),
+    )
 
     service = MemoryService(
         config=config,

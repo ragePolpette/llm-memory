@@ -1,4 +1,4 @@
-"""Vector store locale su SQLite (embeddings in tabella, ranking in-process)."""
+"""Local SQLite vector store (embeddings in a table, in-process ranking)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from .base import VectorStore
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Calcola similarità coseno in [0, 1]."""
+    """Cosine similarity rescaled to [0, 1]."""
 
     if not a or not b or len(a) != len(b):
         return 0.0
@@ -26,7 +26,7 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 class SQLiteVectorStore(VectorStore):
-    """Implementazione vector store che usa `SQLiteMemoryStore` come persistenza."""
+    """Vector store backed by `SQLiteMemoryStore`."""
 
     def __init__(self, store: SQLiteMemoryStore):
         self.store = store

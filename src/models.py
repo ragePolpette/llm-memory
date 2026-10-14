@@ -1,4 +1,4 @@
-"""Modelli dati condivisi per LLM Memory."""
+"""Shared data models for LLM Memory."""
 
 from __future__ import annotations
 
@@ -14,19 +14,19 @@ from .config import MemoryScope, ScopeLevel, Tier
 
 
 def utc_now() -> datetime:
-    """Timestamp UTC standardizzato."""
+    """Standardized UTC timestamp."""
 
     return datetime.now(timezone.utc)
 
 
 def compute_content_hash(content: str) -> str:
-    """Calcola SHA-256 del contenuto."""
+    """Compute the SHA-256 of the content."""
 
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 class EntryType(str, Enum):
-    """Tipologie canoniche per memory.md."""
+    """Canonical entry types for memory.md."""
 
     FACT = "fact"
     ASSUMPTION = "assumption"
@@ -36,7 +36,7 @@ class EntryType(str, Enum):
 
 
 class EntryStatus(str, Enum):
-    """Stato di una entry."""
+    """Entry status."""
 
     ACTIVE = "active"
     SUPERSEDED = "superseded"
@@ -44,7 +44,7 @@ class EntryStatus(str, Enum):
 
 
 class FastMemoryDistillationStatus(str, Enum):
-    """Stato di distillazione di una fast-memory entry."""
+    """Distillation status of a fast-memory entry."""
 
     PENDING = "pending"
     SUMMARIZED = "summarized"
@@ -53,7 +53,7 @@ class FastMemoryDistillationStatus(str, Enum):
 
 
 class FastMemoryDistillationRunStatus(str, Enum):
-    """Stato del workflow di una distillation run."""
+    """Workflow status of a distillation run."""
 
     PREPARED = "prepared"
     REVIEWED = "reviewed"
@@ -61,7 +61,7 @@ class FastMemoryDistillationRunStatus(str, Enum):
 
 
 class ScopeRef(BaseModel):
-    """Scope gerarchico: workspace/project/user/agent."""
+    """Hierarchical scope: workspace/project/user/agent."""
 
     workspace_id: str = "default"
     project_id: str = "default"
@@ -71,7 +71,7 @@ class ScopeRef(BaseModel):
 
 
 class ProjectRecord(BaseModel):
-    """Metadata progetto per discovery e amministrazione scope."""
+    """Project metadata for discovery and scope administration."""
 
     workspace_id: str = "default"
     project_id: str
@@ -83,14 +83,14 @@ class ProjectRecord(BaseModel):
 
 
 class EntryLink(BaseModel):
-    """Link esplicito fra entry."""
+    """Explicit link between entries."""
 
     target_id: str
     relation: str
 
 
 class EmbeddingVersion(BaseModel):
-    """Metadati versione embedding."""
+    """Embedding version metadata."""
 
     version_id: str
     provider_id: str
@@ -103,7 +103,7 @@ class EmbeddingVersion(BaseModel):
 
 
 class MemoryEntry(BaseModel):
-    """Entry di memoria persistente Tier-1/2/3."""
+    """Persistent Tier-1/2/3 memory entry."""
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     tier: Tier = Tier.TIER_1
@@ -144,7 +144,7 @@ class MemoryEntry(BaseModel):
 
 
 class FastMemoryEntry(BaseModel):
-    """Entry episodica separata dalla memoria forte."""
+    """Episodic entry kept apart from strong memory."""
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     workspace_id: str = "default"
@@ -190,7 +190,7 @@ class FastMemoryEntry(BaseModel):
 
 
 class AuditEvent(BaseModel):
-    """Evento audit trail locale."""
+    """Local audit trail event."""
 
     id: Optional[int] = None
     entry_id: Optional[str] = None
@@ -202,7 +202,7 @@ class AuditEvent(BaseModel):
 
 
 class FastMemoryDistillationRun(BaseModel):
-    """Run tracciata del workflow prepare/review/apply della fast memory."""
+    """Tracked prepare/review/apply run of the fast-memory workflow."""
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     workspace_id: str = "default"
@@ -224,7 +224,7 @@ class FastMemoryDistillationRun(BaseModel):
 
 
 class MemoryBundle(BaseModel):
-    """Output modello-agnostico del retriever."""
+    """Model-agnostic retriever output."""
 
     entry_id: str
     type: EntryType
@@ -243,7 +243,7 @@ class MemoryBundle(BaseModel):
 
 
 class ReembedResult(BaseModel):
-    """Risultato di una operazione reembed."""
+    """Result of a reembed operation."""
 
     version_id: str
     processed: int
@@ -253,7 +253,7 @@ class ReembedResult(BaseModel):
 
 
 class ExportResult(BaseModel):
-    """Risultato di export locale."""
+    """Result of a local export."""
 
     path: str
     format: str
@@ -261,7 +261,7 @@ class ExportResult(BaseModel):
 
 
 class ImportResult(BaseModel):
-    """Risultato di import locale."""
+    """Result of a local import."""
 
     path: str
     format: str

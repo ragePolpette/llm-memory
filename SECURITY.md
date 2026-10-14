@@ -16,6 +16,9 @@ What the code does to reduce risk:
 
 - Outbound network calls are blocked by default (`MEMORY_ALLOW_OUTBOUND_NETWORK=false`); loopback connections remain allowed.
 - The HTTP transport binds to `127.0.0.1` by default and restricts accepted `Host` and `Origin` headers through `MCP_MEMORY_ALLOWED_HOSTS` and `MCP_MEMORY_ALLOWED_ORIGINS`.
+- Optional bearer token authentication (`LLM_MEMORY_API_TOKEN`) protects `/mcp`, `/sse` and `/messages/`; the `/admin/*` endpoints always require it. The server refuses to bind to a non-loopback host without a token.
+- Exports contain only entries the caller is allowed to read.
+- The stderr activity log records hashes and lengths, not content.
 - `memory.import` and `memory.export` paths must resolve under `MEMORY_IMPORT_EXPORT_BASE_DIR`.
 - A privacy policy can drop configured metadata keys and flag sensitive tags (`MEMORY_PRIVACY_*`).
 - Sensitive payloads can optionally be encrypted at rest with a key read from an environment variable (`MEMORY_ENCRYPTION_ENABLED`, `MEMORY_ENCRYPTION_KEY_ENV`).
@@ -23,8 +26,8 @@ What the code does to reduce risk:
 
 ## Not Covered
 
-- Authentication and authorization: the HTTP server does not authenticate clients. Do not expose it beyond a trusted network. Note that the provided Docker Compose file publishes port 8767 and sets `MCP_MEMORY_HOST=0.0.0.0` inside the container; restrict access at the host or network level.
-- Encryption is off by default and applies only to payloads selected by the privacy policy. Metadata and the SQLite file itself are not encrypted as a whole.
+- Fine-grained authorization: the bearer token is a single shared secret. Anyone holding it can act as any `agent_id`, because agent identity is self-declared in tool arguments. TLS is not provided; put a TLS-terminating reverse proxy in front of the server if traffic leaves the host. The provided Docker Compose file publishes port 8767 on `127.0.0.1` only and requires a token.
+- Encryption is off by default, requires the optional `crypto` extra, and applies only to payloads selected by the privacy policy. Metadata and the SQLite file itself are not encrypted as a whole. Passphrase-derived keys use a random salt stored in `<MEMORY_SQLITE_PATH>.salt`.
 - Protection against a compromised host, malicious local users, or a malicious MCP client.
 - Content quality: the service does not verify that stored memories are accurate or free of prompt injection.
 - Third-party dependencies and any external embedding provider you configure.
