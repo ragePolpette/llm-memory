@@ -700,6 +700,7 @@ class MemoryService:
         actor: Optional[str] = None,
         reason: Optional[str] = None,
         since: Optional[str] = None,
+        after_id: Optional[int] = None,
     ) -> dict[str, Any]:
         clamped_limit = max(1, min(int(limit), 500))
         normalized_since = self._normalize_since_filter(since)
@@ -710,6 +711,7 @@ class MemoryService:
             actor=actor,
             reason=reason,
             since=normalized_since,
+            after_id=after_id,
         )
         items = []
         for audit in audits:
@@ -728,6 +730,7 @@ class MemoryService:
                 "actor": actor,
                 "reason": reason,
                 "since": normalized_since,
+                "after_id": after_id,
             },
             "items": items,
         }

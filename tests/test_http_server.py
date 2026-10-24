@@ -189,6 +189,32 @@ async def test_admin_audit_supports_filters(monkeypatch, service):
 
 
 @pytest.mark.asyncio
+async def test_admin_audit_after_id_pages_forward_oldest_first(monkeypatch, service):
+    for i in range(5):
+        service.store.add_audit(AuditEvent(action="export", actor="pager", reason=f"r{i}", payload={}))
+    ids = sorted(a.id for a in service.store.list_audit(actor="pager", limit=10))
+
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    request = SimpleNamespace(query_params={"actor": "pager", "after_id": str(ids[1]), "limit": "2"})
+    response = await http_server.admin_audit(request)  # type: ignore[arg-type]
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert [item["id"] for item in payload["audit"]["items"]] == ids[2:4]
+    assert payload["audit"]["filters"]["after_id"] == ids[1]
+
+
+@pytest.mark.asyncio
+async def test_admin_audit_rejects_invalid_after_id(monkeypatch, service):
+    monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
+    for bad in ("-1", "abc"):
+        response = await http_server.admin_audit(SimpleNamespace(query_params={"after_id": bad}))  # type: ignore[arg-type]
+        payload = json.loads(response.body.decode("utf-8"))
+        assert response.status_code == 400
+        assert "after_id" in payload["error"]["message"]
+
+
+@pytest.mark.asyncio
 async def test_admin_audit_rejects_invalid_limit(monkeypatch, service):
     monkeypatch.setattr(http_server, "runtime", SimpleNamespace(service=service))
     request = SimpleNamespace(query_params={"limit": "0"})

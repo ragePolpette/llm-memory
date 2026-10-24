@@ -999,7 +999,10 @@ class SQLiteMemoryStore:
         actor: Optional[str] = None,
         reason: Optional[str] = None,
         since: Optional[str] = None,
+        after_id: Optional[int] = None,
     ) -> list[AuditEvent]:
+        """Newest first by default. With after_id, rows with id > after_id oldest first, so a
+        consumer can page forward through the log without gaps."""
         sql = ["SELECT * FROM audit_log WHERE 1 = 1"]
         params: list[object] = []
 
@@ -1023,7 +1026,12 @@ class SQLiteMemoryStore:
             sql.append("AND created_at >= ?")
             params.append(since)
 
-        sql.append("ORDER BY created_at DESC LIMIT ?")
+        if after_id is not None:
+            sql.append("AND id > ?")
+            params.append(after_id)
+            sql.append("ORDER BY id ASC LIMIT ?")
+        else:
+            sql.append("ORDER BY created_at DESC LIMIT ?")
         params.append(limit)
 
         with self._conn() as conn:

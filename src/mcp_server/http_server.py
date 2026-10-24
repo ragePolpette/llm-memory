@@ -214,6 +214,18 @@ def _parse_limit(raw_value: str | None, *, default: int = 100, minimum: int = 1,
     return limit
 
 
+def _parse_after_id(raw_value: str | None) -> int | None:
+    if raw_value is None or not str(raw_value).strip():
+        return None
+    try:
+        value = int(str(raw_value).strip())
+    except ValueError:
+        raise ValueError("after_id must be a non-negative integer") from None
+    if value < 0:
+        raise ValueError("after_id must be a non-negative integer")
+    return value
+
+
 def _parse_optional_bool(raw_value: str | None) -> bool | None:
     if raw_value is None or not str(raw_value).strip():
         return None
@@ -490,6 +502,7 @@ async def admin_audit(request: Request):
             actor=request.query_params.get("actor"),
             reason=request.query_params.get("reason"),
             since=request.query_params.get("since"),
+            after_id=_parse_after_id(request.query_params.get("after_id")),
         )
     except ValueError as exc:
         return _admin_bad_request(str(exc))
