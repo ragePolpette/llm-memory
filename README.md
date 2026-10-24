@@ -163,7 +163,7 @@ Local admin and health endpoints. `/health` is always public; the `/admin/*` end
 
 - `GET /health`
 - `GET /admin/summary`
-- `GET /admin/audit`
+- `GET /admin/audit` (filters: `entry_id`, `action`, `actor`, `reason`, `since`; `after_id=<id>` returns rows with a greater id oldest first, for gap-free polling)
 - `GET /admin/projects`
 - `GET /admin/fast-memory`
 - `GET /admin/fast-memory/candidates`
