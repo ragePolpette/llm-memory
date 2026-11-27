@@ -637,6 +637,8 @@ class MemoryStore:
             "SELECT 'memory' AS kind, m.id, m.statement || CASE WHEN m.why != '' THEN char(10) || m.why ELSE '' END AS text,"
             " m.created_at FROM memories m WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.item_kind = 'memory'"
             " AND e.item_id = m.id AND e.version_id = ?)"
+            # ciphertext carries no meaning: encrypted v1 memories are never sent for embedding
+            " AND m.tags_json NOT LIKE '%\"v1-encrypted\"%'"
             " UNION ALL SELECT 'episode', p.id, p.content, p.created_at FROM episodes p WHERE NOT EXISTS (SELECT 1 FROM"
             " embeddings e WHERE e.item_kind = 'episode' AND e.item_id = p.id AND e.version_id = ?)"
             " ORDER BY created_at LIMIT ?",
