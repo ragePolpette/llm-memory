@@ -1,0 +1,7 @@
+# Fake secrets used as test fixtures for the secret detector in commit fff77d4.
+# The fixtures are now assembled at run time; these entries only cover that commit's history.
+fff77d450f2d2aa2851eb56153faf86827272675:tests/test_store_v2_secrets_service.py:jwt:24
+fff77d450f2d2aa2851eb56153faf86827272675:tests/test_store_v2_secrets_service.py:generic-api-key:21
+fff77d450f2d2aa2851eb56153faf86827272675:tests/test_store_v2_secrets_service.py:generic-api-key:58
+fff77d450f2d2aa2851eb56153faf86827272675:tests/test_store_v2_secrets_service.py:generic-api-key:106
+fff77d450f2d2aa2851eb56153faf86827272675:tests/test_store_v2_secrets_service.py:curl-auth-header:18

@@ -485,6 +485,17 @@ class MemoryStore:
         params.append(max(1, min(int(limit), 500)))
         return [self._memory_row(row) for row in self._read(" ".join(sql), params)]
 
+    def count_items(self, project_id: str) -> dict:
+        """Active memories, closed memories and episodes of a project."""
+
+        row = self._read(
+            "SELECT (SELECT COUNT(1) FROM memories WHERE project_id = ? AND valid_to IS NULL) AS active,"
+            " (SELECT COUNT(1) FROM memories WHERE project_id = ? AND valid_to IS NOT NULL) AS closed,"
+            " (SELECT COUNT(1) FROM episodes WHERE project_id = ?) AS episodes",
+            (project_id, project_id, project_id),
+        )[0]
+        return {"memories_active": row["active"], "memories_closed": row["closed"], "episodes": row["episodes"]}
+
     def touch_memories(self, memory_ids: Iterable[str], *, at: Optional[str] = None) -> None:
         """Record that memories were returned to an agent (input for confidence decay)."""
 

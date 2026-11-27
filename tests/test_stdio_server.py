@@ -15,6 +15,8 @@ def _server_env(tmp_path: Path) -> dict[str, str]:
     env.update(
         {
             "MEMORY_SQLITE_PATH": str(tmp_path / "memory.db"),
+            "MEMORY_STORE_PATH": str(tmp_path / "memory-v2.db"),
+            "MEMORY_EMBEDDING": "off",
             "MEMORY_IMPORT_EXPORT_BASE_DIR": str(tmp_path / "exchange"),
             "MCP_MODELS_DIR": str(tmp_path / "models"),
             "HF_HOME": str(tmp_path / "models" / "hf"),
@@ -91,5 +93,5 @@ def test_stdio_server_writes_only_json_rpc_to_stdout(tmp_path):
     assert responses[0]["id"] == 1
     assert responses[0]["result"]["serverInfo"]["name"] == "llm-memory"
     assert responses[1]["id"] == 2
-    assert any(tool["name"] == "memory.add" for tool in responses[1]["result"]["tools"])
-    assert "LLM Memory runtime initialized" in stderr
+    assert any(tool["name"] == "memory.note" for tool in responses[1]["result"]["tools"])
+    assert "llm-memory runtime initialized" in stderr
