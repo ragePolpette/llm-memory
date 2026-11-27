@@ -164,3 +164,23 @@ async def test_cli(v1_db, tmp_path, capsys):
     await _populate(service, actor)
     assert main(["--from", str(path), "--dry-run"]) == 0
     assert '"memories": 5' in capsys.readouterr().out
+
+
+async def test_runtime_migrates_v1_once_at_first_start(v1_db, tmp_path):
+    from src.store_v2.runtime import RuntimeSettings, build_runtime
+
+    path, service, actor = v1_db
+    ids = await _populate(service, actor)
+    settings = RuntimeSettings(store_path=tmp_path / "auto-v2.db", v1_path=path, embedding=None,
+                               use_sqlite_vec=False)
+    runtime = build_runtime(settings)
+    try:
+        assert runtime.migration_report["memories"] == 5
+        assert runtime.store.get_memory(ids["kept"]) is not None
+    finally:
+        runtime.close()
+    second = build_runtime(settings)  # the v2 file exists now: no second migration
+    try:
+        assert second.migration_report is None
+    finally:
+        second.close()

@@ -1,4 +1,4 @@
-"""MCP HTTP server for LLM Memory v2 (streamable HTTP + legacy SSE)."""
+"""MCP HTTP server for llm-memory (streamable HTTP + legacy SSE), backed by the v2 store."""
 
 from __future__ import annotations
 
@@ -18,12 +18,13 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from src.bootstrap import build_runtime
+from datetime import datetime, timezone
+
 from src.config import Config, get_config
 from src.logging_setup import configure_logging
 from src.mcp_server.mcp_transport import LegacySseTransport, StreamableTransport
-from src.mcp_server.tools import register_tools
-from src.service.memory_service import ActorContext
+from src.mcp_server.tools_v2 import register_tools_v2
+from src.store_v2.runtime import Runtime, build_runtime
 
 configure_logging()
 logger = structlog.get_logger()
@@ -32,7 +33,7 @@ API_TOKEN_ENV = "LLM_MEMORY_API_TOKEN"
 PROTECTED_MCP_PREFIXES = ("/mcp", "/sse", "/messages")
 ADMIN_PREFIX = "/admin"
 
-runtime = None
+runtime: Runtime | None = None
 mcp_server: Server | None = None
 sse_transport: LegacySseTransport | None = None
 streamable_session_manager: StreamableTransport | None = None
@@ -290,19 +291,6 @@ def _admin_bad_request(message: str) -> JSONResponse:
     )
 
 
-def _admin_forbidden(message: str) -> JSONResponse:
-    return JSONResponse(
-        {
-            "status": "error",
-            "error": {
-                "type": "forbidden",
-                "message": message,
-            },
-        },
-        status_code=403,
-    )
-
-
 def _parse_limit(raw_value: str | None, *, default: int = 100, minimum: int = 1, maximum: int = 500) -> int:
     if raw_value is None or not str(raw_value).strip():
         return default
@@ -322,84 +310,6 @@ def _parse_after_id(raw_value: str | None) -> int | None:
     if value < 0:
         raise ValueError("after_id must be a non-negative integer")
     return value
-
-
-def _parse_optional_bool(raw_value: str | None) -> bool | None:
-    if raw_value is None or not str(raw_value).strip():
-        return None
-    normalized = str(raw_value).strip().lower()
-    if normalized in {"1", "true", "yes", "y", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "n", "off"}:
-        return False
-    raise ValueError("resolved must be a boolean value")
-
-
-async def _parse_json_body(request: Request) -> dict[str, Any]:
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError as exc:
-        raise ValueError("request body must be valid JSON") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("request body must be a JSON object")
-    return payload
-
-
-def _normalize_payload_bool(value: Any, *, field_name: str, default: bool | None = None) -> bool:
-    if value is None:
-        if default is None:
-            raise ValueError(f"{field_name} must be a boolean")
-        return default
-    if isinstance(value, bool):
-        return value
-    raise ValueError(f"{field_name} must be a boolean")
-
-
-def _normalize_payload_int(
-    value: Any,
-    *,
-    field_name: str,
-    default: int,
-    minimum: int,
-    maximum: int,
-) -> int:
-    if value is None:
-        return default
-    try:
-        normalized = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field_name} must be an integer") from exc
-    if normalized < minimum or normalized > maximum:
-        raise ValueError(f"{field_name} must be between {minimum} and {maximum}")
-    return normalized
-
-
-def _normalize_optional_string(value: Any) -> str | None:
-    if value is None:
-        return None
-    normalized = str(value).strip()
-    return normalized or None
-
-
-def _require_body_reason(value: Any, *, field_name: str = "reason") -> str:
-    normalized = _normalize_optional_string(value)
-    if not normalized:
-        raise ValueError(f"{field_name} is required")
-    return normalized
-
-
-def _build_admin_actor(payload: dict[str, Any]) -> ActorContext:
-    if runtime is None:
-        raise RuntimeError("Server not initialized")
-    agent_id = _normalize_optional_string(payload.get("agent_id"))
-    if not agent_id:
-        raise ValueError("agent_id is required")
-    return ActorContext(
-        agent_id=agent_id,
-        user_id=_normalize_optional_string(payload.get("user_id")),
-        workspace_id=_normalize_optional_string(payload.get("workspace_id")) or runtime.config.default_workspace_id,
-        project_id=_normalize_optional_string(payload.get("project_id")) or runtime.config.default_project_id,
-    )
 
 
 async def _read_request_body(receive: Receive) -> tuple[bytes, list[dict[str, Any]]]:
@@ -437,10 +347,10 @@ def init_components() -> None:
     config = get_config()
     validate_bind(config)
     app_config = config
-    runtime = build_runtime(config)
+    runtime = build_runtime()
 
     mcp_server = Server("llm-memory")
-    register_tools(mcp_server, runtime.service)
+    register_tools_v2(mcp_server, runtime.service)
 
     @mcp_server.list_resources()
     async def _list_resources():
@@ -461,17 +371,23 @@ def init_components() -> None:
         allowed_hosts=config.mcp_allowed_hosts,
         allowed_origins=config.mcp_allowed_origins,
     )
-    logger.info("LLM Memory HTTP runtime initialized", **config.startup_diagnostics())
+    logger.info("llm-memory HTTP runtime initialized", transport=config.startup_diagnostics()["transport"],
+                **runtime.settings.diagnostics())
+    if runtime.migration_report:
+        logger.info("v1 database migrated", **runtime.migration_report)
 
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
     init_components()
-    if runtime is not None:
-        await runtime.prewarm()
-    assert streamable_session_manager is not None
-    async with streamable_session_manager.run():
-        yield
+    assert runtime is not None and streamable_session_manager is not None
+    runtime.start_background()
+    try:
+        async with streamable_session_manager.run():
+            yield
+    finally:
+        await runtime.stop_background()
+        runtime.close()
 
 
 class StreamableHTTPASGIApp:
@@ -565,282 +481,97 @@ async def health(request: Request):
             "server": "llm-memory",
             "api": "v2",
             "mcp_sse_enabled": bool(getattr(app_config, "mcp_sse_enabled", False)),
-            "diagnostics": app_config.startup_diagnostics() if expose_diagnostics else None,
+            "diagnostics": _diagnostics() if expose_diagnostics else None,
         }
     )
 
 
-async def admin_summary(request: Request):
-    if runtime is None:
-        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
-    return JSONResponse(
-        {
-            "status": "ok",
-            "server": "llm-memory",
-            "api": "v2",
-            "summary": runtime.service.admin_summary(),
-        }
-    )
+def _diagnostics() -> dict[str, Any]:
+    payload: dict[str, Any] = {"transport": app_config.startup_diagnostics()["transport"]} if app_config else {}
+    if runtime is not None:
+        payload.update(runtime.settings.diagnostics())
+        version = runtime.store.active_embedding_version()
+        payload["active_embedding_version"] = version["version_id"] if version else None
+    return payload
+
+
+def _not_ready() -> JSONResponse:
+    return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+
+
+def _normalize_since(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("since must be a valid ISO 8601 timestamp") from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 async def admin_audit(request: Request):
+    """Audit log, newest first; with after_id, the rows after it oldest first (a cursor)."""
+
     if runtime is None:
-        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+        return _not_ready()
+    params = request.query_params
     try:
-        limit = _parse_limit(request.query_params.get("limit"), default=100)
-        payload = runtime.service.admin_list_audit(
-            limit=limit,
-            entry_id=request.query_params.get("entry_id"),
-            action=request.query_params.get("action"),
-            actor=request.query_params.get("actor"),
-            reason=request.query_params.get("reason"),
-            since=request.query_params.get("since"),
-            after_id=_parse_after_id(request.query_params.get("after_id")),
-        )
+        limit = _parse_limit(params.get("limit"), default=100)
+        filters = {
+            "entry_id": params.get("entry_id"),
+            "action": params.get("action"),
+            "actor": params.get("actor"),
+            "reason": params.get("reason"),
+            "since": _normalize_since(params.get("since")),
+            "after_id": _parse_after_id(params.get("after_id")),
+        }
     except ValueError as exc:
         return _admin_bad_request(str(exc))
-    return JSONResponse(
-        {
-            "status": "ok",
-            "server": "llm-memory",
-            "api": "v2",
-            "audit": payload,
-        }
-    )
+    items = []
+    for record in runtime.store.list_audit(limit=limit, **filters):
+        preview = json.dumps(record.payload, ensure_ascii=True, sort_keys=True)
+        items.append({
+            "id": record.id,
+            "entry_id": record.entry_id,
+            "action": record.action,
+            "actor": record.actor,
+            "reason": record.reason,
+            "payload": record.payload,
+            "created_at": record.created_at,
+            "payload_preview": preview if len(preview) <= 240 else preview[:237] + "...",
+        })
+    return JSONResponse({
+        "status": "ok",
+        "server": "llm-memory",
+        "api": "v2",
+        "audit": {"count": len(items), "limit": limit, "filters": filters, "items": items},
+    })
 
 
 async def admin_projects(request: Request):
     if runtime is None:
-        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
+        return _not_ready()
     try:
         limit = _parse_limit(request.query_params.get("limit"), default=200)
-        payload = runtime.service.admin_list_projects(
-            workspace_id=request.query_params.get("workspace_id"),
-            limit=limit,
-        )
     except ValueError as exc:
         return _admin_bad_request(str(exc))
-    return JSONResponse(
-        {
-            "status": "ok",
-            "server": "llm-memory",
-            "api": "v2",
-            "projects": payload,
-        }
-    )
-
-
-async def admin_fast_memory(request: Request):
-    if runtime is None:
-        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
-    try:
-        limit = _parse_limit(request.query_params.get("limit"), default=100)
-        payload = runtime.service.admin_list_fast(
-            workspace_id=request.query_params.get("workspace_id"),
-            project_id=request.query_params.get("project_id"),
-            agent_id=request.query_params.get("agent_id"),
-            event_type=request.query_params.get("event_type"),
-            resolved=_parse_optional_bool(request.query_params.get("resolved")),
-            distillation_status=request.query_params.get("distillation_status"),
-            limit=limit,
-        )
-    except ValueError as exc:
-        return _admin_bad_request(str(exc))
-    return JSONResponse(
-        {
-            "status": "ok",
-            "server": "llm-memory",
-            "api": "v2",
-            "fast_memory": payload,
-        }
-    )
-
-
-async def admin_fast_memory_candidates(request: Request):
-    if runtime is None:
-        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
-    try:
-        limit = _parse_limit(request.query_params.get("limit"), default=20, maximum=200)
-        payload = runtime.service.admin_rank_fast_candidates(
-            workspace_id=request.query_params.get("workspace_id"),
-            project_id=request.query_params.get("project_id"),
-            limit=limit,
-            include_resolved=bool(_parse_optional_bool(request.query_params.get("include_resolved")) or False),
-            distillation_status=request.query_params.get("distillation_status"),
-        )
-    except ValueError as exc:
-        return _admin_bad_request(str(exc))
-    return JSONResponse(
-        {
-            "status": "ok",
-            "server": "llm-memory",
-            "api": "v2",
-            "candidates": payload,
-        }
-    )
-
-
-async def admin_fast_memory_distillation_runs(request: Request):
-    if runtime is None:
-        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
-    try:
-        limit = _parse_limit(request.query_params.get("limit"), default=50, maximum=200)
-        payload = runtime.service.admin_list_fast_distillation_runs(
-            workspace_id=request.query_params.get("workspace_id"),
-            project_id=request.query_params.get("project_id"),
-            agent_id=request.query_params.get("agent_id"),
-            status=request.query_params.get("status"),
-            limit=limit,
-        )
-    except ValueError as exc:
-        return _admin_bad_request(str(exc))
-    return JSONResponse(
-        {
-            "status": "ok",
-            "server": "llm-memory",
-            "api": "v2",
-            "runs": payload,
-        }
-    )
-
-
-async def admin_fast_memory_distillation_run(request: Request):
-    if runtime is None:
-        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
-    run_id = str(request.path_params.get("run_id", "")).strip()
-    if not run_id:
-        return _admin_bad_request("run_id is required")
-    payload = runtime.service.admin_get_fast_distillation_run(run_id)
-    if payload is None:
-        return JSONResponse(
-            {
-                "status": "error",
-                "error": {
-                    "type": "not_found",
-                    "message": f"Fast-memory distillation run '{run_id}' was not found",
-                },
-            },
-            status_code=404,
-        )
-    return JSONResponse(
-        {
-            "status": "ok",
-            "server": "llm-memory",
-            "api": "v2",
-            "run": payload,
-        }
-    )
-
-
-async def admin_prepare_fast_distillation(request: Request):
-    if runtime is None:
-        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
-    try:
-        payload = await _parse_json_body(request)
-        actor = _build_admin_actor(payload)
-        prepared = runtime.service.prepare_fast_distillation(
-            actor=actor,
-            reason=_require_body_reason(payload.get("reason")),
-            cluster_id=_normalize_optional_string(payload.get("cluster_id")),
-            entry_id=_normalize_optional_string(payload.get("entry_id")),
-            top_k=_normalize_payload_int(
-                payload.get("top_k"),
-                field_name="top_k",
-                default=1,
-                minimum=1,
-                maximum=10,
-            ),
-            include_resolved=_normalize_payload_bool(
-                payload.get("include_resolved"),
-                field_name="include_resolved",
-                default=False,
-            ),
-            distillation_status=_normalize_optional_string(payload.get("distillation_status")),
-        )
-    except PermissionError as exc:
-        return _admin_forbidden(str(exc))
-    except ValueError as exc:
-        return _admin_bad_request(str(exc))
-    return JSONResponse(
-        {
-            "status": "ok",
-            "server": "llm-memory",
-            "api": "v2",
-            "distillation_prepare": prepared,
-        }
-    )
-
-
-async def admin_apply_fast_distillation(request: Request):
-    if runtime is None:
-        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
-    try:
-        body = await _parse_json_body(request)
-        actor = _build_admin_actor(body)
-        payload = body.get("payload")
-        if not isinstance(payload, dict):
-            raise ValueError("payload must be an object with a decisions array")
-        result = await runtime.service.apply_fast_distillation(
-            actor=actor,
-            payload=payload,
-            reason=_require_body_reason(body.get("reason")),
-            run_id=_normalize_optional_string(body.get("run_id")),
-            dry_run=_normalize_payload_bool(body.get("dry_run"), field_name="dry_run", default=True),
-        )
-    except PermissionError as exc:
-        return _admin_forbidden(str(exc))
-    except ValueError as exc:
-        return _admin_bad_request(str(exc))
-    return JSONResponse(
-        {
-            "status": "ok",
-            "server": "llm-memory",
-            "api": "v2",
-            "distillation_apply": result,
-        }
-    )
-
-
-async def admin_fast_memory_entry(request: Request):
-    if runtime is None:
-        return JSONResponse({"status": "error", "message": "Server not initialized"}, status_code=503)
-    entry_id = str(request.path_params.get("entry_id", "")).strip()
-    if not entry_id:
-        return _admin_bad_request("entry_id is required")
-    payload = runtime.service.admin_get_fast(entry_id)
-    if payload is None:
-        return JSONResponse(
-            {
-                "status": "error",
-                "error": {
-                    "type": "not_found",
-                    "message": f"Fast-memory entry '{entry_id}' was not found",
-                },
-            },
-            status_code=404,
-        )
-    return JSONResponse(
-        {
-            "status": "ok",
-            "server": "llm-memory",
-            "api": "v2",
-            "entry": payload,
-        }
-    )
+    items = runtime.store.list_projects()[:limit]
+    for project in items:
+        project.update(runtime.store.count_items(project["project_id"]))
+    return JSONResponse({
+        "status": "ok",
+        "server": "llm-memory",
+        "api": "v2",
+        "projects": {"count": len(items), "items": items},
+    })
 
 
 routes = [
     Route("/health", health, methods=["GET"]),
-    Route("/admin/summary", admin_summary, methods=["GET"]),
     Route("/admin/audit", admin_audit, methods=["GET"]),
     Route("/admin/projects", admin_projects, methods=["GET"]),
-    Route("/admin/fast-memory", admin_fast_memory, methods=["GET"]),
-    Route("/admin/fast-memory/candidates", admin_fast_memory_candidates, methods=["GET"]),
-    Route("/admin/fast-memory/distillation/runs", admin_fast_memory_distillation_runs, methods=["GET"]),
-    Route("/admin/fast-memory/distillation/runs/{run_id:str}", admin_fast_memory_distillation_run, methods=["GET"]),
-    Route("/admin/fast-memory/distillation/prepare", admin_prepare_fast_distillation, methods=["POST"]),
-    Route("/admin/fast-memory/distillation/apply", admin_apply_fast_distillation, methods=["POST"]),
-    Route("/admin/fast-memory/{entry_id:str}", admin_fast_memory_entry, methods=["GET"]),
     Route("/mcp", endpoint=streamable_http_app, methods=["GET", "POST", "DELETE"]),
     Route("/sse", sse_legacy_endpoint, methods=["GET"]),
     Mount("/messages/", app=legacy_messages_app),

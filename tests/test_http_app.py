@@ -29,6 +29,8 @@ INITIALIZE = {
 @pytest.fixture
 def http_env(monkeypatch, tmp_path):
     monkeypatch.setenv("MEMORY_SQLITE_PATH", str(tmp_path / "memory.db"))
+    monkeypatch.setenv("MEMORY_STORE_PATH", str(tmp_path / "memory-v2.db"))
+    monkeypatch.setenv("MEMORY_EMBEDDING", "off")
     monkeypatch.setenv("MEMORY_IMPORT_EXPORT_BASE_DIR", str(tmp_path / "exchange"))
     monkeypatch.setenv("MCP_MODELS_DIR", str(tmp_path / "models"))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "models" / "hf"))
@@ -62,7 +64,7 @@ def test_lifespan_starts_real_app_and_serves_health(http_env, caplog):
 
 def test_admin_endpoints_are_disabled_without_token(http_env):
     with TestClient(http_server.app, base_url="http://127.0.0.1:8767") as client:
-        response = client.get("/admin/summary")
+        response = client.get("/admin/audit")
         assert response.status_code == 403
         assert "LLM_MEMORY_API_TOKEN" in response.json()["error"]["message"]
 
@@ -77,11 +79,11 @@ def test_token_protects_mcp_and_admin_endpoints(http_env):
         ok = client.post("/mcp", json=INITIALIZE, headers={**MCP_HEADERS, **auth})
         assert ok.status_code == 200
 
-        unauthorized = client.get("/admin/summary")
+        unauthorized = client.get("/admin/audit")
         assert unauthorized.status_code == 401
         assert unauthorized.headers["WWW-Authenticate"] == "Bearer"
-        assert client.get("/admin/summary", headers={"Authorization": f"Basic {TOKEN}"}).status_code == 401
-        summary = client.get("/admin/summary", headers=auth)
+        assert client.get("/admin/audit", headers={"Authorization": f"Basic {TOKEN}"}).status_code == 401
+        summary = client.get("/admin/audit", headers=auth)
         assert summary.status_code == 200
         assert summary.json()["status"] == "ok"
 
