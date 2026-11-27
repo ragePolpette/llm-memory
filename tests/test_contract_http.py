@@ -184,7 +184,7 @@ def test_secrets_are_rejected_and_never_stored(mcp, client):
     assert error["code"] == "secret_rejected" and error["details"]["fields"] == ["content"]
     assert error["details"]["kinds"] == ["openai_key"] and key not in json.dumps(error)
     error = mcp.fail("memory.save", {"project_id": PROJECT, "type": "fact", "statement": "Il db risponde.",
-                                     "how": "psql postgres://app:Sup3rS3cret@db.local/app"})
+                                     "how": "psql postgres://app:" + "Sup3rS3cret" + "@db.local/app"})
     assert error["details"]["fields"] == ["how"]
 
     rejected = rows(client, reason="secret_detected")

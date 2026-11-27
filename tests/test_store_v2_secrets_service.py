@@ -1,4 +1,8 @@
-"""Secret detection, service validation and runtime wiring of the v2 store."""
+"""Secret detection, service validation and runtime wiring of the v2 store.
+
+The fake secrets below are assembled at run time (J joins the parts) so that secret
+scanners such as gitleaks do not flag the test source itself.
+"""
 
 from __future__ import annotations
 
@@ -10,19 +14,24 @@ from src.store_v2.secrets import scan_fields, scan_text
 from src.store_v2.service import Caller, MemoryServiceV2, ServiceError
 from src.store_v2.store import MemoryStore
 
+
+def J(*parts: str) -> str:
+    return "".join(parts)
+
+
 SECRETS = [
-    ("export OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789ABCD", "openai_key"),
+    (J("export OPENAI_API_KEY=sk-", "proj-abcdefghijklmnopqrstuvwxyz", "0123456789ABCD"), "openai_key"),
     ("ghp_" + "a1B2c3D4e5" * 4, "github_token"),
-    ("AKIAIOSFODNN7EXAMPLE", "aws_access_key"),
-    ("postgres://app:S3cretPw@db.local:5432/x", "url_credentials"),
-    ("curl -H 'Authorization: Bearer abcDEF1234567890abcdef1234567890'", "bearer_token"),
-    ("password = 'hX9#kq2LmP0z'", "credential_assignment"),
-    ("-----BEGIN OPENSSH PRIVATE KEY-----", "private_key"),
-    ("LLM_MEMORY_API_TOKEN=4f9a8c2e7d1b6a3f9e0c", "credential_assignment"),
-    ("fw_3ZmJ1bWJhc2VzZWNyZXRrZXk1234", "fireworks_key"),
-    ("sk-ant-api03-abcdefghijklmnopqrstuvwxyz", "anthropic_key"),
-    ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", "jwt"),
-    ("xoxb-1234567890-abcdefghij", "slack_token"),
+    (J("AKIA", "IOSFODNN7EXAMPLE"), "aws_access_key"),
+    (J("postgres://app:", "S3cretPw", "@db.local:5432/x"), "url_credentials"),
+    (J("curl -H 'Authorization: Bea", "rer abcDEF1234567890", "abcdef1234567890'"), "bearer_token"),
+    (J("pass", "word = 'hX9#kq2L", "mP0z'"), "credential_assignment"),
+    (J("-----BEGIN OPENSSH PRI", "VATE KEY-----"), "private_key"),
+    (J("LLM_MEMORY_API_TOKEN", " ", "=", "4f9a8c", "2e7d1b6a3f9e0c").replace(" ", ""), "credential_assignment"),
+    (J("fw_", "3ZmJ1bWJhc2VzZWNy", "ZXRrZXk1234"), "fireworks_key"),
+    (J("sk-", "ant-api03-abcdefghij", "klmnopqrstuvwxyz"), "anthropic_key"),
+    (J("eyJhbGciOiJIUzI1NiJ9", ".eyJzdWIiOiIxMjM0NTY3ODkwIn0", ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"), "jwt"),
+    (J("xo", "xb-1234567890-abcdefghij"), "slack_token"),
 ]
 
 CLEAN = [
@@ -55,7 +64,7 @@ def test_ordinary_text_passes(text):
 def test_scan_fields_names_the_field_and_walks_structures():
     findings = scan_fields([
         ("content", "nulla"),
-        ("metadata", {"api_key": "Zk29dmQ81xLq", "nested": {"how": "AKIAIOSFODNN7EXAMPLE"}}),
+        ("metadata", {"api_key": J("Zk29dm", "Q81xLq"), "nested": {"how": J("AKIA", "IOSFODNN7EXAMPLE")}}),
         ("tags", ["ok", "ghp_" + "a1B2c3D4e5" * 4]),
         ("none", None),
     ])
@@ -103,7 +112,7 @@ CALLER = Caller(actor="t")
     (lambda s: s.projects(CALLER, action="delete"), "invalid_argument"),
     (lambda s: s.projects(CALLER, action="create"), "invalid_argument"),
     (lambda s: s.projects(CALLER, action="create", project_id="ok-id",
-                          description="token=Qm9vZ2xlMTIzNDU2"), "secret_rejected"),
+                          description=J("tok", "en=Qm9vZ2xl", "MTIzNDU2")), "secret_rejected"),
 ])
 def test_service_errors(service, call, code):
     with pytest.raises(ServiceError) as info:
