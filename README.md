@@ -87,11 +87,12 @@ Configuration is read from environment variables:
 
 ### MCP Tools
 
-- `memory.note`: record what happened (error, test run, observation). Cheap; expires unless cited.
+- `memory.note`: record what happened (error, test run, observation), with optional structured `metadata`. Cheap; expires after 60 days unless cited, or never with `ttl_days: 0` (for records a tool must keep, such as a ledger).
 - `memory.save`: save a decision, lesson, fact, constraint or preference. `why` is required for decisions and lessons; `evidence` cites episodes, memories or external references; `supersedes` replaces an older memory.
 - `memory.supersede`: close a memory that is no longer true, with a reason.
 - `memory.recall`: hybrid search in a project plus the global project, within `budget_chars`; `include_closed` for history.
 - `memory.get`: one memory (with sources and validity) or episode by id.
+- `memory.list`: the latest notes of a kind (`event_type`) or the memories of a type, newest first, without a query.
 - `memory.projects`: list projects, or create one. Writes to unknown projects are rejected.
 
 Errors come back as `{"ok": false, "error": {"code", "message", "details"}}` with `isError` set. Codes: `invalid_argument`, `not_found`, `conflict`, `secret_rejected`, `unknown_tool`.
