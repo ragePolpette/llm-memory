@@ -1,10 +1,11 @@
-"""The six MCP tools of llm-memory v2.
+"""The seven MCP tools of llm-memory v2.
 
     memory.note       raw episode: what happened, cheap, expires unless a memory cites it
     memory.save       structured memory: decision, lesson, fact, constraint, preference
     memory.supersede  close a memory that is no longer true
     memory.recall     hybrid search over memories and episodes, within a character budget
     memory.get        one memory or episode by id
+    memory.list       latest notes of a kind, or memories of a type, without a query
     memory.projects   list or create projects
 
 Results are JSON. Errors come back as {"ok": false, "error": {code, message, details}}
@@ -45,6 +46,10 @@ TOOLS: list[Tool] = [
                 "context": {"type": "string", "description": "Where it happened: file, command, ticket."},
                 "tags": _TAGS,
                 "session_id": {"type": "string"},
+                "metadata": {"type": "object", "description": "Structured fields for tools that read the note back."},
+                "ttl_days": {"type": "integer", "minimum": 0, "maximum": 3650,
+                             "description": "Days before the note expires (default 60). 0 keeps it for good: use it "
+                             "only for records that must outlive the project's working memory."},
                 "agent_id": _AGENT,
             },
             "required": ["project_id", "content"],
@@ -142,6 +147,28 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="memory.list",
+        description=(
+            "List the latest notes of a project (kind=episode, optionally one event_type) or its memories "
+            "(kind=memory, optionally one type), newest first, without a search query. Use memory.recall to search."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project_id": _PROJECT,
+                "kind": {"type": "string", "enum": ["episode", "memory"], "default": "episode"},
+                "event_type": {"type": "string"},
+                "type": {"type": "string", "enum": list(MEMORY_TYPES)},
+                "since": {"type": "string", "description": "ISO 8601 timestamp, inclusive."},
+                "include_closed": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                "agent_id": _AGENT,
+            },
+            "required": ["project_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
         name="memory.projects",
         description="List projects, or create one (action=create). Writes to an unknown project are rejected.",
         inputSchema={
@@ -168,6 +195,7 @@ def _dispatch(service: MemoryServiceV2) -> dict[str, Callable[..., dict]]:
         "memory.supersede": service.supersede,
         "memory.recall": service.recall,
         "memory.get": service.get,
+        "memory.list": service.list,
         "memory.projects": service.projects,
     }
 

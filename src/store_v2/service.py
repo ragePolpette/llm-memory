@@ -1,7 +1,7 @@
 """Operations the MCP tools expose, on top of the v2 store.
 
-Six operations: note (episode), save (structured memory), supersede, recall, get,
-projects. Every write is validated, scanned for secrets and audited in the same
+Seven operations: note (episode), save (structured memory), supersede, recall, get,
+list, projects. Every write is validated, scanned for secrets and audited in the same
 transaction as the data. A rejected write is audited too, without its content.
 
 Audit actions and their payloads (what /admin/audit consumers such as Yesod read):
@@ -146,7 +146,7 @@ class MemoryServiceV2:
 
     def note(self, caller: Caller, *, project_id: str, content: str, event_type: str = "observation",
              context: str = "", tags: Optional[list] = None, session_id: Optional[str] = None,
-             metadata: Optional[dict] = None) -> dict:
+             metadata: Optional[dict] = None, ttl_days: Optional[int] = None) -> dict:
         project_id = self._project(project_id)
         content = _text("content", content, required=True)
         context = _text("context", context)
@@ -159,8 +159,12 @@ class MemoryServiceV2:
             raise ServiceError("invalid_argument", "metadata must be an object")
         self._reject_secrets("note", project_id, caller, [("content", content), ("context", context), ("tags", tags),
                                                           ("metadata", metadata or {})])
+        if ttl_days is None:
+            ttl_days = self.episode_ttl_days
+        if isinstance(ttl_days, bool) or not isinstance(ttl_days, int) or not 0 <= ttl_days <= 3650:
+            raise ServiceError("invalid_argument", "ttl_days must be an integer between 0 (never expires) and 3650")
         repeats = self.store.count_similar_episodes(project_id, event_type, content)
-        expires_at = (_now() + timedelta(days=self.episode_ttl_days)).isoformat()
+        expires_at = (_now() + timedelta(days=ttl_days)).isoformat() if ttl_days else None
         episode = Episode(project_id=project_id, event_type=event_type, content=content, agent_id=caller.actor,
                           context=context, tags=tags, metadata=metadata or {}, session_id=session_id,
                           source=caller.source, expires_at=expires_at)
@@ -282,6 +286,36 @@ class MemoryServiceV2:
         if item is None:
             raise ServiceError("not_found", f"no memory or episode with id {item_id}")
         return {"item": item}
+
+    def list(self, caller: Caller, *, project_id: str, kind: str = "episode", event_type: Optional[str] = None,
+             type: Optional[str] = None, since: Optional[str] = None, include_closed: bool = False,
+             limit: int = 20) -> dict:
+        """Newest first, without a query: the latest notes of a kind, or the memories of a type."""
+
+        project_id = self._project(project_id)
+        if not isinstance(limit, int) or not 1 <= limit <= 200:
+            raise ServiceError("invalid_argument", "limit must be an integer between 1 and 200")
+        if since is not None:
+            try:
+                parsed = datetime.fromisoformat(str(since).replace("Z", "+00:00"))
+            except ValueError:
+                raise ServiceError("invalid_argument", "since must be an ISO 8601 timestamp") from None
+            since = (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc).isoformat()
+        if kind == "episode":
+            if type is not None:
+                raise ServiceError("invalid_argument", "type filters memories; use event_type for episodes")
+            items = self.store.list_episodes(project_id, event_type=event_type, since=since, limit=limit)
+        elif kind == "memory":
+            if event_type is not None:
+                raise ServiceError("invalid_argument", "event_type filters episodes; use type for memories")
+            if type is not None and type not in MEMORY_TYPES:
+                raise ServiceError("invalid_argument", f"type must be one of {', '.join(MEMORY_TYPES)}")
+            items = self.store.list_memories(project_id, active_only=not include_closed, type=type, limit=limit)
+            if since is not None:
+                items = [item for item in items if item["updated_at"] >= since]
+        else:
+            raise ServiceError("invalid_argument", "kind must be episode or memory")
+        return {"items": items, "count": len(items)}
 
     # -- projects -----------------------------------------------------------------
 

@@ -110,6 +110,12 @@ CALLER = Caller(actor="t")
     (lambda s: s.recall(CALLER, project_id="prj", query="x", kinds=["file"]), "invalid_argument"),
     (lambda s: s.recall(CALLER, project_id="prj", query="x", budget_chars=10), "invalid_argument"),
     (lambda s: s.projects(CALLER, action="delete"), "invalid_argument"),
+    (lambda s: s.list(CALLER, project_id="prj", kind="file"), "invalid_argument"),
+    (lambda s: s.list(CALLER, project_id="prj", limit=0), "invalid_argument"),
+    (lambda s: s.list(CALLER, project_id="prj", since="ieri"), "invalid_argument"),
+    (lambda s: s.list(CALLER, project_id="prj", type="fact"), "invalid_argument"),
+    (lambda s: s.list(CALLER, project_id="prj", kind="memory", type="opinion"), "invalid_argument"),
+    (lambda s: s.note(CALLER, project_id="prj", content="x", ttl_days=True), "invalid_argument"),
     (lambda s: s.projects(CALLER, action="create"), "invalid_argument"),
     (lambda s: s.projects(CALLER, action="create", project_id="ok-id",
                           description=J("tok", "en=Qm9vZ2xl", "MTIzNDU2")), "secret_rejected"),
@@ -164,3 +170,11 @@ async def test_runtime_builds_and_runs_background(tmp_path):
         await runtime.stop_background()
     finally:
         runtime.close()
+
+
+def test_list_since_filters(service):
+    service.note(CALLER, project_id="prj", content="Vecchio.")
+    service.save(CALLER, project_id="prj", type="fact", statement="Fatto.")
+    assert service.list(CALLER, project_id="prj", since="2999-01-01")["items"] == []
+    assert service.list(CALLER, project_id="prj", kind="memory", since="2999-01-01T00:00:00Z")["items"] == []
+    assert service.list(CALLER, project_id="prj", kind="memory", since="2000-01-01")["count"] == 1

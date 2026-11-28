@@ -4,8 +4,8 @@ What clients (Yesod first) depend on:
 - GET /admin/audit: auth, response shape, filters, after_id cursor, ids in commit order;
 - audit actions and payloads: note, save, supersede, create_project, every write payload
   with project_id at the top level, rejected writes audited without their content;
-- the six MCP tools: memory.note, memory.save, memory.supersede, memory.recall,
-  memory.get, memory.projects; errors as {ok: false, error: {code, message}}.
+- the seven MCP tools: memory.note, memory.save, memory.supersede, memory.recall,
+  memory.get, memory.list, memory.projects; errors as {ok: false, error: {code, message}}.
 
 Change these tests only together with the clients.
 """
@@ -25,7 +25,8 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
 MCP_HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json", **AUTH}
 PROJECT = "contract-prj"
 AUDIT_ITEM_KEYS = {"id", "entry_id", "action", "actor", "reason", "payload", "created_at", "payload_preview"}
-TOOLS = {"memory.note", "memory.save", "memory.supersede", "memory.recall", "memory.get", "memory.projects"}
+TOOLS = {"memory.note", "memory.save", "memory.supersede", "memory.recall", "memory.get", "memory.list",
+         "memory.projects"}
 
 
 @pytest.fixture
@@ -106,7 +107,7 @@ def rows(client: TestClient, **params) -> list[dict]:
 # -- tools ------------------------------------------------------------------------
 
 
-def test_exactly_six_tools_and_no_legacy_names(mcp):
+def test_exactly_seven_tools_and_no_legacy_names(mcp):
     assert {tool["name"] for tool in mcp.rpc("tools/list")["tools"]} == TOOLS
     assert mcp.fail("memory.add", {})["code"] == "unknown_tool"
 
@@ -263,3 +264,26 @@ def test_admin_projects_counts(mcp, client):
     response = client.get("/admin/projects", headers=AUTH)
     project = next(p for p in response.json()["projects"]["items"] if p["project_id"] == PROJECT)
     assert project["episodes"] == 1 and project["memories_active"] == 1
+
+
+def test_list_latest_notes_and_permanent_records(mcp):
+    for i in range(3):
+        mcp.call("memory.note", {"project_id": PROJECT, "content": f"Run {i} ok.", "event_type": "run_summary",
+                                 "metadata": {"run_id": f"r{i}"}})
+    kept = mcp.call("memory.note", {"project_id": PROJECT, "content": "accepted: dedupe-1",
+                                    "event_type": "proposal_verdict", "metadata": {"verdict": "accepted"},
+                                    "ttl_days": 0})
+    assert kept["expires_at"] is None
+    runs = mcp.call("memory.list", {"project_id": PROJECT, "event_type": "run_summary", "limit": 2})
+    assert [item["metadata"]["run_id"] for item in runs["items"]] == ["r2", "r1"]
+    assert runs["items"][0]["content"] == "Run 2 ok." and runs["items"][0]["expires_at"]
+    verdicts = mcp.call("memory.list", {"project_id": PROJECT, "event_type": "proposal_verdict"})["items"]
+    assert verdicts[0]["metadata"] == {"verdict": "accepted"} and verdicts[0]["expires_at"] is None
+
+    mcp.call("memory.save", {"project_id": PROJECT, "type": "constraint", "statement": "Mai toccare main."})
+    memories = mcp.call("memory.list", {"project_id": PROJECT, "kind": "memory", "type": "constraint"})["items"]
+    assert [m["statement"] for m in memories] == ["Mai toccare main."]
+    assert mcp.fail("memory.list", {"project_id": PROJECT, "kind": "memory", "event_type": "x"})["code"] == \
+        "invalid_argument"
+    assert mcp.fail("memory.note", {"project_id": PROJECT, "content": "x", "ttl_days": -1})["code"] == \
+        "invalid_argument"
